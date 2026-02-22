@@ -4,7 +4,7 @@ Comprehensive root-level documentation for the full Beacon project.
 
 Beacon is an AI-assisted Business Requirements Document platform that converts scattered project conversations and documents into structured BRD drafts with review and export workflows.
 
-## Professional Project Buttons
+## Live Link
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://brd-agent-xi.vercel.app/)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-Repository-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/simplysandeepp/Beacon)
