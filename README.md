@@ -706,3 +706,19 @@ If you want, this README can be extended further with:
 - ER diagrams for Firestore + AKS tables
 - sequence diagrams for share invite lifecycle
 - environment matrix per dev/staging/prod
+
+---
+
+## Footer
+
+# Thankyou :) 🎀
+
+### Social Handle
+
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-simplysandeepp-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/simplysandeepp/)
+[![Pinterest](https://img.shields.io/badge/Pinterest-simplysandeepp-E60023?style=for-the-badge&logo=pinterest&logoColor=white)](https://in.pinterest.com/simplysandeepp/)
+[![LeetCode](https://img.shields.io/badge/LeetCode-simplysandeepp-FFA116?style=for-the-badge&logo=leetcode&logoColor=black)](https://leetcode.com/u/simplysandeepp/)
+[![X](https://img.shields.io/badge/X-simplysandeepp-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/simplysandeepp/)
+[![Instagram](https://img.shields.io/badge/Instagram-simplysandeepp-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://instagram.com/simplysandeepp/)
+
+<img src="https://user-images.githubusercontent.com/74038190/225813708-98b745f2-7d22-48cf-9150-083f1b00d6c9.gif" width="500">
