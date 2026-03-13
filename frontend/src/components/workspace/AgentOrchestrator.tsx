@@ -133,6 +133,9 @@ export default function AgentOrchestrator({ projectId }: { projectId: string }) 
                     appendThought(`[${(payload.agent ?? 'UNKNOWN').toUpperCase()}] Failed: ${payload.error ?? 'Unknown error'}`);
                     break;
                 }
+                case 'generation_completed':
+                    appendThought('[SYSTEM] Section generation completed');
+                    break;
                 case 'validation_started':
                     markAgent('validation', 'working');
                     appendThought('[VALIDATION] Started');

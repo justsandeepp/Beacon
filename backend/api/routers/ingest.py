@@ -34,8 +34,12 @@ class IngestRequest(BaseModel):
 
 def _load_api_key():
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(PROJECT_ROOT, "Noise filter module", ".env"))
-    return os.environ.get("GROQ_CLOUD_API")
+    load_dotenv(os.path.join(PROJECT_ROOT, "Noise filter module", ".env"), override=False)
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
+    api_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_CLOUD_API")
+    if api_key and not os.environ.get("GROQ_API_KEY"):
+        os.environ["GROQ_API_KEY"] = api_key
+    return api_key
 
 def _process_and_store(sess_id: str, chunk_dicts: list):
     """Core classify + store logic shared by both ingest endpoints."""
@@ -132,8 +136,6 @@ async def ingest_demo_dataset(session_id: str, limit: int = 80):
     emails_path = os.path.join(
         PROJECT_ROOT, "Noise filter module", "emails.csv"
     )
-    if not os.path.exists(emails_path):
-        raise HTTPException(status_code=404, detail=f"Demo dataset not found at: {emails_path}")
 
     def _parse_email(raw: str):
         sender, subject, body_lines, in_body = "Unknown", "", [], False
@@ -155,25 +157,49 @@ async def ingest_demo_dataset(session_id: str, limit: int = 80):
 
         log(f"[DEMO INGEST] ▶  Reading up to {limit} emails from Enron dataset...")
         chunk_dicts = []
-        try:
-            with open(emails_path, "r", encoding="utf-8", errors="ignore") as f:
-                reader = _csv.DictReader(f)
-                for i, row in enumerate(reader):
-                    if i >= limit: break
-                    sender, subject, body = _parse_email(row.get("message", ""))
-                    text = f"{subject} {body}".strip() if subject else body
-                    if len(text) < 20: continue
-                    chunk_dicts.append({
-                        "cleaned_text": text[:1500],
-                        "source_ref": row.get("file", f"enron:row{i}"),
-                        "speaker": sender,
-                        "source_type": "email",
-                    })
-                    if (i + 1) % 50 == 0:
-                        log(f"[DEMO INGEST]   Parsed {i+1}/{limit} rows — {len(chunk_dicts)} valid chunks so far")
-        except Exception as e:
-            log(f"[DEMO INGEST] ❌ Parse error: {e}")
-            log_q.put(DONE); return
+        if os.path.exists(emails_path):
+            try:
+                with open(emails_path, "r", encoding="utf-8", errors="ignore") as f:
+                    reader = _csv.DictReader(f)
+                    for i, row in enumerate(reader):
+                        if i >= limit:
+                            break
+                        sender, subject, body = _parse_email(row.get("message", ""))
+                        text = f"{subject} {body}".strip() if subject else body
+                        if len(text) < 20:
+                            continue
+                        chunk_dicts.append({
+                            "cleaned_text": text[:1500],
+                            "source_ref": row.get("file", f"enron:row{i}"),
+                            "speaker": sender,
+                            "source_type": "email",
+                        })
+                        if (i + 1) % 50 == 0:
+                            log(f"[DEMO INGEST]   Parsed {i+1}/{limit} rows — {len(chunk_dicts)} valid chunks so far")
+            except Exception as e:
+                log(f"[DEMO INGEST] ❌ Parse error: {e}")
+                log_q.put(DONE)
+                return
+        else:
+            log(f"[DEMO INGEST] ⚠  Dataset file missing at {emails_path}")
+            log("[DEMO INGEST]    Falling back to built-in synthetic demo signals.")
+            synthetic_rows = [
+                ("PM", "Requirement", "The platform must support SSO authentication for all employees."),
+                ("Security", "Decision", "MFA is mandatory for admin users before launch."),
+                ("Finance", "Timeline", "The MVP launch target is Q3 with phased rollout in Q4."),
+                ("Support", "Feedback", "Users asked for markdown and docx export options."),
+                ("Engineering", "NFR", "API latency must remain below 200ms at p95."),
+                ("Ops", "Assumption", "PostgreSQL remains the primary transactional database."),
+                ("Stakeholder", "Metric", "Reduce onboarding drop-off by 30 percent."),
+            ]
+            for i in range(limit):
+                speaker, subject, body = synthetic_rows[i % len(synthetic_rows)]
+                chunk_dicts.append({
+                    "cleaned_text": f"{subject}: {body}",
+                    "source_ref": f"synthetic:row{i}",
+                    "speaker": speaker,
+                    "source_type": "email",
+                })
 
         log(f"[DEMO INGEST] ✔  Parsed {len(chunk_dicts)} chunks — starting classification...")
         log(f"[DEMO INGEST]    Heuristic filter → Domain gate → Groq LLM (Llama 4 Maverick)")
@@ -187,12 +213,35 @@ async def ingest_demo_dataset(session_id: str, limit: int = 80):
             classified = classify_chunks(chunk_dicts, api_key=api_key, log_fn=log)
             for c in classified:
                 c.session_id = session_id
-            from storage import store_chunks as _store
-            _store(classified)
+            store_chunks(classified)
             log(f"[DEMO INGEST] {'─'*60}")
             log(f"[DEMO INGEST] ✅ Complete! {len(classified)} chunks stored for session '{session_id}'.")
         except Exception as e:
-            log(f"[DEMO INGEST] ❌ Classification error: {e}")
+            log(f"[DEMO INGEST] ⚠  Classification error: {e}")
+            log("[DEMO INGEST]    Falling back to local heuristic classification.")
+            fallback_classified = []
+            for raw in chunk_dicts:
+                text = (raw.get("cleaned_text") or "").strip()
+                lower = text.lower()
+                label = SignalLabel.REQUIREMENT if any(k in lower for k in ["must", "should", "need", "requirement"]) else SignalLabel.NOISE
+                fallback_classified.append(
+                    ClassifiedChunk(
+                        session_id=session_id,
+                        source_type=raw.get("source_type", "email"),
+                        source_ref=raw.get("source_ref", "synthetic"),
+                        speaker=raw.get("speaker", "Unknown"),
+                        raw_text=text,
+                        cleaned_text=text,
+                        label=label,
+                        confidence=0.6,
+                        reasoning="Fallback local classification (LLM unavailable).",
+                        flagged_for_review=True,
+                    )
+                )
+
+            store_chunks(fallback_classified)
+            log(f"[DEMO INGEST] {'─'*60}")
+            log(f"[DEMO INGEST] ✅ Complete! {len(fallback_classified)} chunks stored for session '{session_id}' (fallback mode).")
 
         log_q.put(DONE)
 

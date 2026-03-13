@@ -93,6 +93,7 @@ export type BRDStreamEventType =
     | "agent_started"
     | "agent_completed"
     | "agent_failed"
+    | "generation_completed"
     | "validation_started"
     | "validation_completed"
     | "complete"
@@ -127,6 +128,12 @@ export interface SlackIngestResponse {
     selected_channels: string[];
     channel_message_counts: Record<string, number>;
     chunk_count: number;
+}
+
+export interface GmailStatus {
+    available: boolean;
+    connected: boolean;
+    message: string;
 }
 
 export async function createSession(): Promise<Session> {
@@ -304,6 +311,7 @@ export function streamBRDGeneration(
         "agent_started",
         "agent_completed",
         "agent_failed",
+        "generation_completed",
         "validation_started",
         "validation_completed",
         "complete",
@@ -373,6 +381,55 @@ export async function ingestSlackChannels(
             limit_per_channel: limitPerChannel,
         }),
     });
+}
+
+export async function getGmailStatus(): Promise<GmailStatus> {
+    const checkUrl = joinUrl(BASE, "/gmail/check?count=1");
+    try {
+        const res = await fetch(checkUrl, {
+            method: "GET",
+            redirect: "manual",
+        });
+
+        if (res.status === 404) {
+            return {
+                available: false,
+                connected: false,
+                message: "Gmail API is not available on this backend.",
+            };
+        }
+        if (res.status === 401) {
+            return {
+                available: true,
+                connected: false,
+                message: "Gmail API is available. Authentication required.",
+            };
+        }
+        if (res.ok) {
+            return {
+                available: true,
+                connected: true,
+                message: "Gmail is connected.",
+            };
+        }
+
+        const detail = await res.text().catch(() => "");
+        return {
+            available: true,
+            connected: false,
+            message: detail || `Gmail status check returned ${res.status}.`,
+        };
+    } catch (e) {
+        return {
+            available: false,
+            connected: false,
+            message: e instanceof Error ? e.message : "Unable to reach Gmail API.",
+        };
+    }
+}
+
+export function getGmailLoginUrl(): string {
+    return joinUrl(BASE, "/gmail/login");
 }
 
 export type ExportFormat = "markdown" | "html" | "docx";

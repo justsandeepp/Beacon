@@ -357,12 +357,15 @@ def get_latest_brd_sections(session_id: str) -> Dict[str, str]:
             from psycopg2.extras import RealDictCursor
             cur = conn.cursor(cursor_factory=RealDictCursor)
             
-        cur.execute("""
+        query = """
             SELECT section_name, content 
             FROM brd_sections 
             WHERE session_id = %s
             ORDER BY version_number DESC
-        """, (session_id,))
+        """
+        if db_type == "sqlite":
+            query = query.replace("%s", "?")
+        cur.execute(query, (session_id,))
         rows = cur.fetchall()
         for r in rows:
             # Handle both dict-like and tuple-like row access

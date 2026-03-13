@@ -485,10 +485,10 @@ def run_brd_generation(
             name = future_to_agent[future]
             try:
                 future.result()
-                print(f"  → Agent completed: {name}")
+                print(f"  -> Agent completed: {name}")
                 emit({"type": "agent_completed", "agent": name, "session_id": session_id})
             except Exception as exc:
-                print(f"  → Agent failed: {name} generated an exception: {exc}")
+                print(f"  -> Agent failed: {name} generated an exception: {exc}")
                 emit({
                     "type": "agent_failed",
                     "agent": name,

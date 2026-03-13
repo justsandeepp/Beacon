@@ -10,9 +10,9 @@ export const TopBar = () => {
     const pathname = usePathname();
     const segments = pathname.split('/').filter(Boolean);
 
-    // Default "Project Alpha" context for demo sake if in a project route
     const isProjectView = segments.includes('project');
-    const displaySegments = isProjectView ? [...segments.filter(s => s !== 'project'), 'Project Alpha'] : segments;
+    const projectId = segments[segments.length - 1] ?? '';
+    const displaySegments = isProjectView ? [...segments.filter(s => s !== 'project'), projectId] : segments;
 
     return (
         <header className="flex items-center justify-between w-full mb-8 z-10 relative">

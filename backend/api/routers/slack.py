@@ -62,10 +62,24 @@ def _clean_stale_states() -> None:
 
 
 def _get_redirect_uri() -> str:
+    def _prefer_https_for_localhost(url: str) -> str:
+        if url.startswith("http://localhost") or url.startswith("http://127.0.0.1"):
+            return "https://" + url[len("http://") :]
+        return url
+
     redirect_uri = os.getenv("SLACK_REDIRECT_URI")
     if redirect_uri:
-        return redirect_uri
-    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+        normalized = _prefer_https_for_localhost(redirect_uri.strip().rstrip("/"))
+        # Auto-migrate stale legacy callback paths to the active API callback route.
+        if normalized.endswith("/slack/oauth_redirect"):
+            backend_public_url = _prefer_https_for_localhost(
+                os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+            )
+            return f"{backend_public_url}/integrations/slack/auth/callback"
+        return normalized
+    backend_public_url = _prefer_https_for_localhost(
+        os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+    )
     return f"{backend_public_url}/integrations/slack/auth/callback"
 
 
@@ -94,9 +108,14 @@ def _require_config() -> tuple[str, str, str]:
     client_secret = os.getenv("SLACK_CLIENT_SECRET")
     redirect_uri = _get_redirect_uri()
     if not client_id or not client_secret:
+        missing = []
+        if not client_id:
+            missing.append("SLACK_CLIENT_ID")
+        if not client_secret:
+            missing.append("SLACK_CLIENT_SECRET")
         raise HTTPException(
-            status_code=500,
-            detail="Slack OAuth is not configured. Set SLACK_CLIENT_ID and SLACK_CLIENT_SECRET.",
+            status_code=503,
+            detail=f"Slack OAuth is not configured. Missing: {', '.join(missing)}.",
         )
     return client_id, client_secret, redirect_uri
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Hash, Mail, Upload, CheckCircle2, AlertCircle, Database,
@@ -9,18 +10,28 @@ import {
 import { cn } from '@/lib/utils';
 import Drawer from '@/components/ui/Drawer';
 import Link from 'next/link';
-import { uploadFile, ingestDemoDataset, getChunks, restoreChunk, createSession, type Chunk } from '@/lib/apiClient';
+import {
+    uploadFile,
+    ingestDemoDataset,
+    getChunks,
+    restoreChunk,
+    createSession,
+    getSlackStatus,
+    getSlackOAuthUrl,
+    listSlackChannels,
+    ingestSlackChannels,
+    disconnectSlack,
+    getGmailStatus,
+    getGmailLoginUrl,
+    type Chunk,
+    type GmailStatus,
+    type SlackChannel,
+    type SlackStatus,
+} from '@/lib/apiClient';
 import { useSessionStore } from '@/store/useSessionStore';
 import { useAuth } from '@/contexts/AuthContext';
 
 // ─── Static Connector Data ────────────────────────────────────────────────────
-
-const CHANNELS = [
-    { name: '#product-requirements', members: 12, messages: 1204, selected: true },
-    { name: '#engineering-standup', members: 8, messages: 892, selected: true },
-    { name: '#design-feedback', members: 6, messages: 540, selected: false },
-    { name: '#general', members: 45, messages: 8900, selected: false },
-];
 
 const FILE_ICONS: Record<string, React.ReactNode> = {
     pdf: <FileText size={14} className="text-red-400" />,
@@ -43,6 +54,7 @@ interface UploadedFile {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function IngestionPage() {
+    const searchParams = useSearchParams();
     const { activeSessionId, addSession } = useSessionStore();
     const { user } = useAuth();
     const sessionId = activeSessionId ?? '';
@@ -60,15 +72,135 @@ export default function IngestionPage() {
     const [demoResult, setDemoResult] = useState<string | null>(null);
     const [demoLogs, setDemoLogs] = useState<string[]>([]);
 
-    const [channels, setChannels] = useState(CHANNELS);
+    const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null);
+    const [slackChannels, setSlackChannels] = useState<SlackChannel[]>([]);
+    const [selectedSlackChannels, setSelectedSlackChannels] = useState<string[]>([]);
+    const [slackLoading, setSlackLoading] = useState(false);
+    const [slackSyncing, setSlackSyncing] = useState(false);
+    const [slackMessage, setSlackMessage] = useState<string | null>(null);
+    const [gmailStatus, setGmailStatus] = useState<GmailStatus>({
+        available: false,
+        connected: false,
+        message: 'Checking Gmail connector...',
+    });
+    const [gmailChecked, setGmailChecked] = useState(false);
+    const [gmailMessage, setGmailMessage] = useState<string | null>(null);
     const [expandedChunk, setExpandedChunk] = useState<string | null>(null);
     const [reviewLoading, setReviewLoading] = useState(false);
     const [activeSignals, setActiveSignals] = useState<Chunk[]>([]);
     const [suppressedSignals, setSuppressedSignals] = useState<Chunk[]>([]);
     const [restoringChunkId, setRestoringChunkId] = useState<string | null>(null);
 
-    const toggleChannel = (name: string) =>
-        setChannels(prev => prev.map(c => c.name === name ? { ...c, selected: !c.selected } : c));
+    const ensureSessionId = async (): Promise<string> => {
+        if (sessionId) return sessionId;
+        if (!user) return '';
+        try {
+            const res = await createSession();
+            await addSession('Untitled Session', 'Auto-created for ingestion', user.uid, res.session_id);
+            return res.session_id;
+        } catch {
+            return '';
+        }
+    };
+
+    const syncSlackData = async () => {
+        setSlackLoading(true);
+        try {
+            const status = await getSlackStatus();
+            setSlackStatus(status);
+            if (!status.connected) {
+                setSlackChannels([]);
+                setSelectedSlackChannels([]);
+                setSlackMessage(null);
+                return;
+            }
+            const res = await listSlackChannels();
+            setSlackChannels(res.channels);
+            setSelectedSlackChannels((prev) => prev.filter((id) => res.channels.some((c) => c.id === id)));
+        } catch (e) {
+            setUploadError(e instanceof Error ? e.message : 'Failed to load Slack integration data');
+        } finally {
+            setSlackLoading(false);
+        }
+    };
+
+    const toggleSlackChannel = (channelId: string) => {
+        setSelectedSlackChannels((prev) =>
+            prev.includes(channelId)
+                ? prev.filter((id) => id !== channelId)
+                : [...prev, channelId]
+        );
+    };
+
+    const startSlackConnect = async () => {
+        try {
+            const authUrl = await getSlackOAuthUrl();
+            window.location.href = authUrl;
+        } catch (e) {
+            setUploadError(e instanceof Error ? e.message : 'Failed to start Slack OAuth');
+        }
+    };
+
+    const syncGmailData = async () => {
+        setGmailChecked(false);
+        try {
+            const status = await getGmailStatus();
+            setGmailStatus(status);
+        } finally {
+            setGmailChecked(true);
+        }
+    };
+
+    const startGmailConnect = () => {
+        if (!gmailStatus.available) {
+            setUploadError('Gmail API is not available on this backend runtime.');
+            return;
+        }
+        const loginUrl = getGmailLoginUrl();
+        const popup = window.open(loginUrl, '_blank', 'noopener,noreferrer');
+        if (!popup) {
+            window.location.href = loginUrl;
+        }
+        setGmailMessage('Complete Gmail OAuth in the opened tab, then click Refresh Gmail Status.');
+    };
+
+    const disconnectSlackWorkspace = async () => {
+        try {
+            await disconnectSlack();
+            setSlackMessage('Slack disconnected.');
+            await syncSlackData();
+        } catch (e) {
+            setUploadError(e instanceof Error ? e.message : 'Failed to disconnect Slack');
+        }
+    };
+
+    const syncSelectedSlackChannels = async () => {
+        const sid = await ensureSessionId();
+        if (!sid) {
+            setUploadError('No active session. Create/select one first.');
+            return;
+        }
+        if (!slackStatus?.connected) {
+            setUploadError('Connect Slack first.');
+            return;
+        }
+        if (selectedSlackChannels.length === 0) {
+            setUploadError('Select at least one Slack channel.');
+            return;
+        }
+
+        setSlackSyncing(true);
+        setUploadError(null);
+        try {
+            const result = await ingestSlackChannels(sid, selectedSlackChannels);
+            setSlackMessage(result.message);
+            await refreshReviewGate(sid);
+        } catch (e) {
+            setUploadError(e instanceof Error ? e.message : 'Slack sync failed');
+        } finally {
+            setSlackSyncing(false);
+        }
+    };
 
     const addFiles = (files: File[]) => {
         const newEntries: UploadedFile[] = files.map(f => {
@@ -91,16 +223,7 @@ export default function IngestionPage() {
         setUploadedFiles(prev => prev.filter(f => f.name !== name));
 
     const processFiles = async () => {
-        let sid = sessionId;
-        if (!sid && user) {
-            try {
-                const res = await createSession();
-                sid = res.session_id;
-                await addSession('Untitled Session', 'Auto-created during file ingestion', user.uid, sid);
-            } catch {
-                sid = '';
-            }
-        }
+        const sid = await ensureSessionId();
         if (!sid) {
             setUploadError('No active session. Create one from the Dashboard.');
             return;
@@ -140,16 +263,9 @@ export default function IngestionPage() {
         setDemoLogs([]);
 
         try {
-            // Auto-create a session if one doesn't exist yet
-            let sid = sessionId;
-            if (!sid && user) {
-                try {
-                    const res = await createSession();
-                    sid = res.session_id;
-                } catch {
-                    sid = `sess_${crypto.randomUUID().slice(0, 8)}`;
-                }
-                await addSession('Demo Session', 'Auto-created for Enron demo dataset', user.uid, sid);
+            const sid = await ensureSessionId();
+            if (!sid) {
+                throw new Error('No active session. Create/select one first.');
             }
 
             const res = await ingestDemoDataset(sid, 200, (line) => {
@@ -224,6 +340,29 @@ export default function IngestionPage() {
     };
 
     useEffect(() => {
+        syncSlackData();
+        syncGmailData();
+    }, []);
+
+    useEffect(() => {
+        const slackParam = searchParams.get('slack');
+        if (slackParam === 'connected') {
+            setSlackMessage('Slack workspace connected.');
+            syncSlackData();
+        } else if (slackParam === 'error') {
+            setUploadError('Slack OAuth failed. Please try again.');
+        }
+
+        const gmailParam = searchParams.get('gmail');
+        if (gmailParam === 'connected') {
+            setGmailMessage('Gmail connected.');
+            syncGmailData();
+        } else if (gmailParam === 'error') {
+            setUploadError('Gmail OAuth failed. Please try again.');
+        }
+    }, [searchParams]);
+
+    useEffect(() => {
         if (!sessionId) return;
         refreshReviewGate();
     }, [sessionId]);
@@ -247,6 +386,26 @@ export default function IngestionPage() {
                 </div>
             )}
 
+            {slackMessage && (
+                <div className="px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-center gap-2">
+                    <CheckCircle2 size={13} className="flex-shrink-0" />
+                    {slackMessage}
+                    <button onClick={() => setSlackMessage(null)} className="ml-auto text-emerald-400 hover:text-emerald-300">
+                        <X size={12} />
+                    </button>
+                </div>
+            )}
+
+            {gmailMessage && (
+                <div className="px-4 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300 flex items-center gap-2">
+                    <CheckCircle2 size={13} className="flex-shrink-0" />
+                    {gmailMessage}
+                    <button onClick={() => setGmailMessage(null)} className="ml-auto text-emerald-400 hover:text-emerald-300">
+                        <X size={12} />
+                    </button>
+                </div>
+            )}
+
             {/* S2-01: Connector Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-5">
 
@@ -262,22 +421,34 @@ export default function IngestionPage() {
                         <div>
                             <h3 className="text-sm font-semibold text-zinc-100">Slack</h3>
                             <div className="flex items-center gap-1.5 mt-0.5">
-                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                <span className="text-[11px] text-emerald-400 font-medium">Connected</span>
+                                <div className={`w-1.5 h-1.5 rounded-full ${slackStatus?.connected ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+                                <span className={`text-[11px] font-medium ${slackStatus?.connected ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                                    {slackStatus?.connected ? 'Connected' : 'Disconnected'}
+                                </span>
                             </div>
                         </div>
                     </div>
 
-                    <p className="text-xs text-zinc-500">Workspace: <span className="text-zinc-300 font-mono">hackfest-team.slack.com</span></p>
+                    <p className="text-xs text-zinc-500">
+                        Workspace:
+                        <span className="text-zinc-300 font-mono ml-1">
+                            {slackStatus?.team_name ?? 'Not connected'}
+                        </span>
+                    </p>
 
                     {/* Rate limit */}
                     <div>
                         <div className="flex justify-between text-[10px] mb-1">
-                            <span className="text-zinc-500">API token usage</span>
-                            <span className="text-emerald-400 font-medium">42%</span>
+                            <span className="text-zinc-500">Slack status</span>
+                            <span className="text-cyan-300 font-medium">
+                                {slackLoading ? 'Syncing...' : `${slackChannels.length} channels`}
+                            </span>
                         </div>
                         <div className="h-1 rounded-full bg-white/8 overflow-hidden">
-                            <div className="h-full bg-emerald-400/70 rounded-full" style={{ width: '42%' }} />
+                            <div
+                                className="h-full bg-emerald-400/70 rounded-full"
+                                style={{ width: `${Math.min(100, slackChannels.length * 5)}%` }}
+                            />
                         </div>
                     </div>
 
@@ -285,49 +456,138 @@ export default function IngestionPage() {
                     <div>
                         <p className="text-[11px] text-zinc-500 uppercase tracking-wider mb-2 font-medium">Channels</p>
                         <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                            {channels.map(ch => (
-                                <label
-                                    key={ch.name}
-                                    className="flex items-center gap-2.5 p-2 rounded-lg cursor-pointer hover:bg-white/5 transition-colors"
-                                >
-                                    <input
-                                        type="checkbox"
-                                        checked={ch.selected}
-                                        onChange={() => toggleChannel(ch.name)}
-                                        className="w-3.5 h-3.5 accent-cyan-400 cursor-pointer"
-                                    />
-                                    <span className="text-xs text-zinc-300 font-mono flex-1 truncate">{ch.name}</span>
-                                    <span className="text-[10px] text-zinc-600">{ch.messages.toLocaleString()}</span>
-                                </label>
-                            ))}
+                            {!slackStatus?.connected ? (
+                                <p className="text-xs text-zinc-500 px-2 py-2">Connect Slack to load channels.</p>
+                            ) : slackLoading ? (
+                                <p className="text-xs text-zinc-500 px-2 py-2">Loading channels...</p>
+                            ) : slackChannels.length === 0 ? (
+                                <p className="text-xs text-zinc-500 px-2 py-2">No channels available.</p>
+                            ) : (
+                                slackChannels.map((ch) => (
+                                    <label
+                                        key={ch.id}
+                                        className="flex items-center gap-2.5 p-2 rounded-lg cursor-pointer hover:bg-white/5 transition-colors"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedSlackChannels.includes(ch.id)}
+                                            onChange={() => toggleSlackChannel(ch.id)}
+                                            className="w-3.5 h-3.5 accent-cyan-400 cursor-pointer"
+                                        />
+                                        <span className="text-xs text-zinc-300 font-mono flex-1 truncate">#{ch.name}</span>
+                                        <span className="text-[10px] text-zinc-600">{ch.is_member ? 'joined' : 'read-only'}</span>
+                                    </label>
+                                ))
+                            )}
                         </div>
                     </div>
 
-                    <button className="btn-primary w-full text-sm flex items-center justify-center gap-2">
-                        <RefreshCw size={13} />
-                        Sync Selected
-                    </button>
+                    {!slackStatus?.connected ? (
+                        <button
+                            onClick={startSlackConnect}
+                            className="btn-primary w-full text-sm flex items-center justify-center gap-2"
+                        >
+                            <Hash size={13} />
+                            Connect Slack
+                        </button>
+                    ) : (
+                        <div className="space-y-2">
+                            <button
+                                onClick={syncSelectedSlackChannels}
+                                disabled={slackSyncing || selectedSlackChannels.length === 0}
+                                className="btn-primary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                                {slackSyncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                                {slackSyncing ? 'Syncing...' : 'Sync Selected'}
+                            </button>
+                            <button
+                                onClick={disconnectSlackWorkspace}
+                                className="btn-secondary w-full text-xs py-2 border-red-500/20 text-red-300 hover:bg-red-500/10"
+                            >
+                                Disconnect Slack
+                            </button>
+                        </div>
+                    )}
                 </motion.div>
 
-                {/* Gmail — Coming Soon */}
+                {/* Gmail Connector */}
                 <motion.div
                     initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35, delay: 0.07 }}
-                    className="glass-card p-3 sm:p-5 rounded-xl space-y-3 sm:space-y-4 opacity-50 cursor-not-allowed"
+                    className="glass-card p-3 sm:p-5 rounded-xl space-y-3 sm:space-y-4"
                 >
                     <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center">
-                            <Mail size={18} className="text-zinc-600" />
+                        <div
+                            className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
+                                gmailStatus.connected
+                                    ? 'bg-emerald-500/15 border-emerald-500/25'
+                                    : gmailStatus.available
+                                        ? 'bg-blue-500/15 border-blue-500/25'
+                                        : 'bg-white/5 border-white/10'
+                            }`}
+                        >
+                            <Mail size={18} className={gmailStatus.connected ? 'text-emerald-400' : gmailStatus.available ? 'text-blue-300' : 'text-zinc-600'} />
                         </div>
                         <div>
-                            <div className="flex items-center gap-2">
-                                <h3 className="text-sm font-semibold text-zinc-400">Gmail</h3>
-                                <span className="glass-badge bg-zinc-800/60 border border-white/10 text-zinc-500 text-[9px]">COMING SOON</span>
+                            <h3 className="text-sm font-semibold text-zinc-100">Gmail</h3>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                                <div
+                                    className={`w-1.5 h-1.5 rounded-full ${
+                                        !gmailChecked
+                                            ? 'bg-zinc-500 animate-pulse'
+                                            : gmailStatus.connected
+                                                ? 'bg-emerald-400'
+                                                : gmailStatus.available
+                                                    ? 'bg-blue-400'
+                                                    : 'bg-zinc-600'
+                                    }`}
+                                />
+                                <span
+                                    className={`text-[11px] font-medium ${
+                                        !gmailChecked
+                                            ? 'text-zinc-500'
+                                            : gmailStatus.connected
+                                                ? 'text-emerald-400'
+                                                : gmailStatus.available
+                                                    ? 'text-blue-300'
+                                                    : 'text-zinc-500'
+                                    }`}
+                                >
+                                    {!gmailChecked ? 'Checking' : gmailStatus.connected ? 'Connected' : gmailStatus.available ? 'Available' : 'Unavailable'}
+                                </span>
                             </div>
-                            <p className="text-[11px] text-zinc-600 mt-0.5">Out of scope for v1</p>
                         </div>
                     </div>
-                    <p className="text-xs text-zinc-600">Gmail integration will allow ingestion of email threads as signal sources.</p>
-                    <button disabled className="btn-secondary w-full text-sm opacity-50 cursor-not-allowed">Connect Gmail</button>
+                    <p className="text-xs text-zinc-500">
+                        {!gmailChecked ? 'Checking backend Gmail endpoint...' : gmailStatus.message}
+                    </p>
+                    <div className="space-y-2">
+                        <button
+                            onClick={startGmailConnect}
+                            disabled={!gmailChecked || !gmailStatus.available || gmailStatus.connected}
+                            className={`w-full text-sm flex items-center justify-center gap-2 ${
+                                gmailStatus.available && !gmailStatus.connected
+                                    ? 'btn-primary'
+                                    : 'btn-secondary'
+                            } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        >
+                            <Mail size={13} />
+                            {!gmailChecked
+                                ? 'Checking Gmail...'
+                                : gmailStatus.connected
+                                    ? 'Gmail Connected'
+                                    : gmailStatus.available
+                                        ? 'Connect Gmail'
+                                        : 'Gmail Unavailable'}
+                        </button>
+                        <button
+                            onClick={syncGmailData}
+                            disabled={!gmailChecked}
+                            className="btn-secondary w-full text-xs py-2 disabled:opacity-50"
+                        >
+                            <RefreshCw size={12} className="inline mr-1" />
+                            Refresh Gmail Status
+                        </button>
+                    </div>
                 </motion.div>
 
                 {/* File Upload */}
@@ -398,7 +658,7 @@ export default function IngestionPage() {
 
                     <button
                         onClick={processFiles}
-                        disabled={uploading || demoLoading || uploadedFiles.filter(f => f.status === 'queued').length === 0 || !sessionId}
+                        disabled={uploading || demoLoading || uploadedFiles.filter(f => f.status === 'queued').length === 0}
                         className="btn-primary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         {uploading

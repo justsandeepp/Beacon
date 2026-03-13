@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 const navItems = [
     { name: "Dashboard", href: "/dashboard", icon: LayoutGrid },
     { name: "Data Ingestion", href: "/ingestion", icon: Database },
-    { name: "Agent Orchestrator", href: "/agents", icon: Bot }, // critical for demo
+    { name: "Agent Orchestrator", href: "/agents", icon: Bot },
     { name: "BRD Editor", href: "/editor", icon: FileText },
 ];
 

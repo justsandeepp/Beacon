@@ -2,9 +2,15 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import sys
+from dotenv import load_dotenv
 
 # Add the parent directory and nested modules so we can import them
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Load env vars once for all routers (e.g., Slack OAuth config).
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(PROJECT_ROOT, "Noise filter module", ".env"), override=False)
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
 
 from .routers import sessions, ingest, review, brd, hitl, slack
 from brd_module.storage import init_db

@@ -1,77 +1,90 @@
 "use client";
 
-import { useAuthStore } from '@/store/useAuthStore';
-import { useIntegrationStore } from '@/store/useIntegrationStore';
-import { useSessionStore } from '@/store/useSessionStore';
+import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import {
+    Calendar,
+    CheckCircle2,
+    FileText,
+    Mail,
+    MessageSquare,
+    Settings as SettingsIcon,
+    Users as UsersIcon,
+    Video,
+    XCircle,
+} from "lucide-react";
+
+import { useAuthStore } from "@/store/useAuthStore";
+import { useIntegrationStore } from "@/store/useIntegrationStore";
+import { useSessionStore } from "@/store/useSessionStore";
 import {
     disconnectSlack,
     getSlackOAuthUrl,
     getSlackStatus,
+    getChunks,
     ingestSlackChannels,
     listSlackChannels,
     type SlackChannel,
     type SlackStatus,
-} from '@/lib/apiClient';
-import { User, Mail, MessageSquare, Video, Users as UsersIcon, FileText, Calendar, CheckCircle2, XCircle, Settings as SettingsIcon } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+} from "@/lib/apiClient";
 
 const dataSources = [
     {
-        id: 'slack',
-        name: 'Slack',
+        id: "slack",
+        name: "Slack",
         icon: MessageSquare,
-        color: 'from-purple-500 to-pink-500',
-        description: 'Connect your Slack workspace to ingest conversations',
-        fields: ['Workspace URL', 'Channel Access']
+        color: "from-purple-500 to-pink-500",
+        description: "Connect your Slack workspace to ingest conversations",
+        available: true,
     },
     {
-        id: 'gmail',
-        name: 'Gmail',
+        id: "gmail",
+        name: "Gmail",
         icon: Mail,
-        color: 'from-red-500 to-orange-500',
-        description: 'Sync email threads and discussions',
-        fields: ['Email Address', 'Filter Rules']
+        color: "from-red-500 to-orange-500",
+        description: "Sync email threads and discussions",
+        available: false,
     },
     {
-        id: 'teams',
-        name: 'MS Teams',
+        id: "teams",
+        name: "MS Teams",
         icon: UsersIcon,
-        color: 'from-blue-600 to-indigo-600',
-        description: 'Import team conversations and channels',
-        fields: ['Team ID', 'Channel Selection']
+        color: "from-blue-600 to-indigo-600",
+        description: "Import team conversations and channels",
+        available: false,
     },
     {
-        id: 'meetings',
-        name: 'Meetings (Fireflies)',
+        id: "fireflies",
+        name: "Meetings (Fireflies)",
         icon: Video,
-        color: 'from-blue-500 to-cyan-500',
-        description: 'Auto-sync meeting transcriptions',
-        fields: ['Account Email', 'Auto-Record']
+        color: "from-blue-500 to-cyan-500",
+        description: "Auto-sync meeting transcriptions",
+        available: false,
     },
     {
-        id: 'documents',
-        name: 'Documents',
+        id: "documents",
+        name: "Documents",
         icon: FileText,
-        color: 'from-green-500 to-emerald-500',
-        description: 'Upload and analyze PDF, DOCX, TXT files',
-        fields: ['Storage Location', 'Auto-Scan']
+        color: "from-green-500 to-emerald-500",
+        description: "Upload and analyze PDF, DOCX, TXT files",
+        available: false,
     },
     {
-        id: 'calendar',
-        name: 'Calendar',
+        id: "calendar",
+        name: "Calendar",
         icon: Calendar,
-        color: 'from-yellow-500 to-amber-500',
-        description: 'Extract requirements from calendar events',
-        fields: ['Calendar Access', 'Event Keywords']
-    }
+        color: "from-yellow-500 to-amber-500",
+        description: "Extract requirements from calendar events",
+        available: false,
+    },
 ];
 
 export default function ProfilePage() {
     const searchParams = useSearchParams();
     const { user, updateUser } = useAuthStore();
-    const { integrations, toggleConnection, updateIntegration } = useIntegrationStore();
+    const { integrations, updateIntegration } = useIntegrationStore();
     const { activeSessionId } = useSessionStore();
+
     const [editingProfile, setEditingProfile] = useState(false);
     const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null);
     const [slackChannels, setSlackChannels] = useState<SlackChannel[]>([]);
@@ -81,10 +94,13 @@ export default function ProfilePage() {
     const [slackError, setSlackError] = useState<string | null>(null);
     const [slackMessage, setSlackMessage] = useState<string | null>(null);
 
-    const getIntegrationStatus = (sourceId: string) => {
-        const integration = integrations.find(i => i.type === sourceId);
-        return integration?.connected || false;
-    };
+    const [totalChunks, setTotalChunks] = useState(0);
+    const [activeChunks, setActiveChunks] = useState(0);
+    const [noiseChunks, setNoiseChunks] = useState(0);
+    const [statsLoading, setStatsLoading] = useState(false);
+
+    const activeSources = useMemo(() => (slackStatus?.connected ? 1 : 0), [slackStatus?.connected]);
+    const relevancePct = totalChunks > 0 ? Math.round((activeChunks / totalChunks) * 100) : 0;
 
     const syncSlackStatus = async () => {
         setSlackLoading(true);
@@ -92,34 +108,72 @@ export default function ProfilePage() {
         try {
             const status = await getSlackStatus();
             setSlackStatus(status);
+
             if (status.connected) {
                 const channelRes = await listSlackChannels();
                 setSlackChannels(channelRes.channels);
-                const persisted = integrations.find((i) => i.type === 'slack')?.config?.channels ?? [];
-                setSelectedSlackChannels(
-                    persisted.filter((id) => channelRes.channels.some((c) => c.id === id))
-                );
+
+                const persisted = integrations.find((i) => i.type === "slack")?.config?.channels ?? [];
+                const validSelected = persisted.filter((id) => channelRes.channels.some((c) => c.id === id));
+                setSelectedSlackChannels(validSelected);
+
+                const slackIntegration = integrations.find((i) => i.type === "slack");
+                if (slackIntegration) {
+                    updateIntegration(slackIntegration.id, {
+                        connected: true,
+                        name: status.team_name ? `${status.team_name} Workspace` : "Slack Workspace",
+                        config: {
+                            ...(slackIntegration.config ?? {}),
+                            workspace: status.team_name ?? "",
+                            channels: validSelected,
+                        },
+                    });
+                }
             } else {
                 setSlackChannels([]);
                 setSelectedSlackChannels([]);
-            }
 
-            const slackIntegration = integrations.find((i) => i.type === 'slack');
-            if (slackIntegration) {
-                updateIntegration(slackIntegration.id, {
-                    connected: status.connected,
-                    name: status.team_name ? `${status.team_name} Workspace` : 'Slack Workspace',
-                    config: {
-                        ...(slackIntegration.config ?? {}),
-                        workspace: status.team_name ?? '',
-                        channels: selectedSlackChannels,
-                    },
-                });
+                const slackIntegration = integrations.find((i) => i.type === "slack");
+                if (slackIntegration) {
+                    updateIntegration(slackIntegration.id, {
+                        connected: false,
+                        config: {
+                            ...(slackIntegration.config ?? {}),
+                            workspace: "",
+                            channels: [],
+                        },
+                    });
+                }
             }
         } catch (e) {
-            setSlackError(e instanceof Error ? e.message : 'Failed to load Slack status');
+            setSlackError(e instanceof Error ? e.message : "Failed to load Slack status");
         } finally {
             setSlackLoading(false);
+        }
+    };
+
+    const loadSessionStats = async () => {
+        if (!activeSessionId) {
+            setTotalChunks(0);
+            setActiveChunks(0);
+            setNoiseChunks(0);
+            return;
+        }
+
+        setStatsLoading(true);
+        try {
+            const all = await getChunks(activeSessionId, "all");
+            const active = all.chunks.filter((chunk) => !chunk.suppressed).length;
+            const noise = all.chunks.length - active;
+            setTotalChunks(all.count);
+            setActiveChunks(active);
+            setNoiseChunks(noise);
+        } catch {
+            setTotalChunks(0);
+            setActiveChunks(0);
+            setNoiseChunks(0);
+        } finally {
+            setStatsLoading(false);
         }
     };
 
@@ -128,18 +182,22 @@ export default function ProfilePage() {
     }, []);
 
     useEffect(() => {
-        const slackParam = searchParams.get('slack');
+        loadSessionStats();
+    }, [activeSessionId]);
+
+    useEffect(() => {
+        const slackParam = searchParams.get("slack");
         if (!slackParam) return;
-        if (slackParam === 'connected') {
-            setSlackMessage('Slack workspace connected successfully.');
+        if (slackParam === "connected") {
+            setSlackMessage("Slack workspace connected successfully.");
             syncSlackStatus();
-        } else if (slackParam === 'error') {
-            setSlackError('Slack OAuth failed. Please try again.');
+        } else if (slackParam === "error") {
+            setSlackError("Slack OAuth failed. Please try again.");
         }
     }, [searchParams]);
 
     useEffect(() => {
-        const slackIntegration = integrations.find((i) => i.type === 'slack');
+        const slackIntegration = integrations.find((i) => i.type === "slack");
         if (!slackIntegration) return;
         updateIntegration(slackIntegration.id, {
             config: {
@@ -155,7 +213,7 @@ export default function ProfilePage() {
             const authUrl = await getSlackOAuthUrl();
             window.location.href = authUrl;
         } catch (e) {
-            setSlackError(e instanceof Error ? e.message : 'Failed to start Slack OAuth');
+            setSlackError(e instanceof Error ? e.message : "Failed to start Slack OAuth");
         }
     };
 
@@ -163,30 +221,31 @@ export default function ProfilePage() {
         setSlackError(null);
         try {
             await disconnectSlack();
-            setSlackMessage('Slack disconnected.');
+            setSlackMessage("Slack disconnected.");
             await syncSlackStatus();
         } catch (e) {
-            setSlackError(e instanceof Error ? e.message : 'Failed to disconnect Slack');
+            setSlackError(e instanceof Error ? e.message : "Failed to disconnect Slack");
         }
     };
 
     const ingestSelectedSlackChannels = async () => {
         if (!activeSessionId) {
-            setSlackError('Select an active BRD session before ingesting Slack channels.');
+            setSlackError("Select an active BRD session before ingesting Slack channels.");
             return;
         }
         if (selectedSlackChannels.length === 0) {
-            setSlackError('Select at least one Slack channel to ingest.');
+            setSlackError("Select at least one Slack channel to ingest.");
             return;
         }
+
         setSlackIngesting(true);
         setSlackError(null);
         try {
             const result = await ingestSlackChannels(activeSessionId, selectedSlackChannels);
             setSlackMessage(result.message);
-            await syncSlackStatus();
+            await loadSessionStats();
         } catch (e) {
-            setSlackError(e instanceof Error ? e.message : 'Slack ingestion failed');
+            setSlackError(e instanceof Error ? e.message : "Slack ingestion failed");
         } finally {
             setSlackIngesting(false);
         }
@@ -194,17 +253,16 @@ export default function ProfilePage() {
 
     return (
         <div className="space-y-8">
-            {/* User Profile Header */}
             <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/20 rounded-xl p-8">
                 <div className="flex items-start justify-between">
                     <div className="flex items-center gap-6">
                         <div className="w-20 h-20 rounded-full bg-gradient-to-br from-cyan-500 to-purple-500 flex items-center justify-center text-white text-2xl font-bold">
-                            {user?.name?.charAt(0) || 'U'}
+                            {user?.name?.charAt(0) || "U"}
                         </div>
                         <div>
-                            <h1 className="text-2xl font-semibold text-zinc-100">{user?.name || 'User Profile'}</h1>
+                            <h1 className="text-2xl font-semibold text-zinc-100">{user?.name || "User Profile"}</h1>
                             <p className="text-zinc-400 mt-1">{user?.email}</p>
-                            <p className="text-cyan-400 text-sm mt-2">Employee • Product Team</p>
+                            <p className="text-cyan-400 text-sm mt-2">Employee - Product Team</p>
                         </div>
                     </div>
                     <button
@@ -217,7 +275,6 @@ export default function ProfilePage() {
                 </div>
             </div>
 
-            {/* Edit Profile Modal */}
             {editingProfile && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setEditingProfile(false)}>
                     <div className="bg-zinc-900 border border-white/10 rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
@@ -226,8 +283,8 @@ export default function ProfilePage() {
                             onSubmit={(e) => {
                                 e.preventDefault();
                                 const formData = new FormData(e.currentTarget);
-                                const name = formData.get('name') as string;
-                                const email = formData.get('email') as string;
+                                const name = formData.get("name") as string;
+                                const email = formData.get("email") as string;
                                 updateUser(name, email);
                                 setEditingProfile(false);
                             }}
@@ -263,10 +320,7 @@ export default function ProfilePage() {
                                 >
                                     Cancel
                                 </button>
-                                <button
-                                    type="submit"
-                                    className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors"
-                                >
+                                <button type="submit" className="flex-1 px-4 py-2 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg font-medium transition-colors">
                                     Save Changes
                                 </button>
                             </div>
@@ -276,38 +330,29 @@ export default function ProfilePage() {
             )}
 
             {(slackError || slackMessage) && (
-                <div className={`rounded-xl border px-4 py-3 text-sm ${slackError
-                    ? 'border-red-500/20 bg-red-500/10 text-red-300'
-                    : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
-                    }`}>
+                <div
+                    className={`rounded-xl border px-4 py-3 text-sm ${
+                        slackError ? "border-red-500/20 bg-red-500/10 text-red-300" : "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                    }`}
+                >
                     {slackError ?? slackMessage}
                 </div>
             )}
 
-            {/* Data Ingestion Sources */}
             <div>
                 <div className="mb-6">
                     <h2 className="text-xl font-semibold text-zinc-100">Data Ingestion Sources</h2>
-                    <p className="text-zinc-400 text-sm mt-1">
-                        Connect your accounts to automatically collect requirements and feedback
-                    </p>
+                    <p className="text-zinc-400 text-sm mt-1">Connect your accounts to collect requirements and feedback</p>
                 </div>
 
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {dataSources.map((source) => {
-                        const isSlack = source.id === 'slack';
                         const Icon = source.icon;
-                        const integration = integrations.find(i => i.type === source.id);
-                        const isConnected = isSlack
-                            ? Boolean(slackStatus?.connected)
-                            : integration?.connected || false;
+                        const isSlack = source.id === "slack";
+                        const isConnected = isSlack ? Boolean(slackStatus?.connected) : false;
 
                         return (
-                            <div
-                                key={source.id}
-                                className="bg-zinc-900/50 border border-white/5 rounded-xl p-6 hover:border-white/10 transition-all group"
-                            >
-                                {/* Icon & Status */}
+                            <div key={source.id} className="bg-zinc-900/50 border border-white/5 rounded-xl p-6 hover:border-white/10 transition-all group">
                                 <div className="flex items-start justify-between mb-4">
                                     <div className={`p-4 rounded-xl bg-gradient-to-br ${source.color} group-hover:scale-110 transition-transform`}>
                                         <Icon size={28} className="text-white" />
@@ -320,75 +365,62 @@ export default function ProfilePage() {
                                     ) : (
                                         <div className="flex items-center gap-1.5 px-2.5 py-1 bg-zinc-800 border border-white/5 rounded-full">
                                             <XCircle size={12} className="text-zinc-500" />
-                                            <span className="text-xs font-medium text-zinc-500">Inactive</span>
+                                            <span className="text-xs font-medium text-zinc-500">
+                                                {source.available ? "Inactive" : "Coming soon"}
+                                            </span>
                                         </div>
                                     )}
                                 </div>
 
-                                {/* Title & Description */}
                                 <h3 className="text-lg font-semibold text-zinc-100 mb-2">{source.name}</h3>
                                 <p className="text-sm text-zinc-400 mb-4">{source.description}</p>
 
-                                {/* Configuration Fields */}
-                                {isConnected && (
+                                {isSlack && isConnected && (
                                     <div className="mb-4 space-y-2">
-                                        {isSlack ? (
-                                            <>
-                                                <div className="flex items-center justify-between text-xs">
-                                                    <span className="text-zinc-500">Workspace</span>
-                                                    <span className="text-cyan-400">{slackStatus?.team_name ?? 'Connected'}</span>
-                                                </div>
-                                                <div className="space-y-1.5 pt-2">
-                                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500">Read-only channels</p>
-                                                    <div className="max-h-28 overflow-y-auto pr-1 space-y-1">
-                                                        {slackChannels.length === 0 ? (
-                                                            <p className="text-[11px] text-zinc-500">
-                                                                {slackLoading ? 'Loading channels...' : 'No channels found'}
-                                                            </p>
-                                                        ) : (
-                                                            slackChannels.slice(0, 12).map((channel) => (
-                                                                <label key={channel.id} className="flex items-center gap-2 text-xs text-zinc-300">
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={selectedSlackChannels.includes(channel.id)}
-                                                                        onChange={() => {
-                                                                            setSelectedSlackChannels((prev) =>
-                                                                                prev.includes(channel.id)
-                                                                                    ? prev.filter((id) => id !== channel.id)
-                                                                                    : [...prev, channel.id]
-                                                                            );
-                                                                        }}
-                                                                        className="w-3.5 h-3.5 accent-cyan-400"
-                                                                    />
-                                                                    <span className="truncate">#{channel.name}</span>
-                                                                </label>
-                                                            ))
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </>
-                                        ) : (
-                                            source.fields.map((field) => (
-                                                <div key={field} className="flex items-center justify-between text-xs">
-                                                    <span className="text-zinc-500">{field}</span>
-                                                    <span className="text-cyan-400">✓ Set</span>
-                                                </div>
-                                            ))
-                                        )}
+                                        <div className="flex items-center justify-between text-xs">
+                                            <span className="text-zinc-500">Workspace</span>
+                                            <span className="text-cyan-400">{slackStatus?.team_name ?? "Connected"}</span>
+                                        </div>
+                                        <div className="space-y-1.5 pt-2">
+                                            <p className="text-[10px] uppercase tracking-wider text-zinc-500">Read-only channels</p>
+                                            <div className="max-h-28 overflow-y-auto pr-1 space-y-1">
+                                                {slackChannels.length === 0 ? (
+                                                    <p className="text-[11px] text-zinc-500">{slackLoading ? "Loading channels..." : "No channels found"}</p>
+                                                ) : (
+                                                    slackChannels.slice(0, 20).map((channel) => (
+                                                        <label key={channel.id} className="flex items-center gap-2 text-xs text-zinc-300">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={selectedSlackChannels.includes(channel.id)}
+                                                                onChange={() =>
+                                                                    setSelectedSlackChannels((prev) =>
+                                                                        prev.includes(channel.id)
+                                                                            ? prev.filter((id) => id !== channel.id)
+                                                                            : [...prev, channel.id]
+                                                                    )
+                                                                }
+                                                                className="w-3.5 h-3.5 accent-cyan-400"
+                                                            />
+                                                            <span className="truncate">#{channel.name}</span>
+                                                        </label>
+                                                    ))
+                                                )}
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
 
-                                {/* Action Button */}
                                 {isSlack ? (
                                     <div className="space-y-2">
                                         <button
                                             onClick={isConnected ? disconnectSlackWorkspace : connectSlack}
-                                            className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${isConnected
-                                                ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20'
-                                                : 'bg-cyan-500 hover:bg-cyan-600 text-white'
-                                                }`}
+                                            className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                                                isConnected
+                                                    ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20"
+                                                    : "bg-cyan-500 hover:bg-cyan-600 text-white"
+                                            }`}
                                         >
-                                            {isConnected ? 'Disconnect Slack' : 'Connect Slack'}
+                                            {isConnected ? "Disconnect Slack" : "Connect Slack"}
                                         </button>
                                         {isConnected && (
                                             <button
@@ -396,24 +428,16 @@ export default function ProfilePage() {
                                                 disabled={slackIngesting || selectedSlackChannels.length === 0}
                                                 className="w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/20 disabled:opacity-50"
                                             >
-                                                {slackIngesting ? 'Ingesting…' : 'Ingest Selected Channels'}
+                                                {slackIngesting ? "Ingesting..." : "Ingest Selected Channels"}
                                             </button>
                                         )}
                                     </div>
                                 ) : (
                                     <button
-                                        onClick={() => {
-                                            const integrationId = integrations.find(i => i.type === source.id)?.id;
-                                            if (integrationId) {
-                                                toggleConnection(integrationId);
-                                            }
-                                        }}
-                                        className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${isConnected
-                                            ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20'
-                                            : 'bg-cyan-500 hover:bg-cyan-600 text-white'
-                                            }`}
+                                        disabled
+                                        className="w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors bg-zinc-800/70 text-zinc-500 border border-white/10 cursor-not-allowed"
                                     >
-                                        {isConnected ? 'Disconnect' : 'Connect Now'}
+                                        Coming Soon
                                     </button>
                                 )}
                             </div>
@@ -422,27 +446,24 @@ export default function ProfilePage() {
                 </div>
             </div>
 
-            {/* Quick Stats */}
             <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-6">
-                <h3 className="text-lg font-semibold text-zinc-100 mb-4">Ingestion Statistics</h3>
-                <div className="grid grid-cols-4 gap-4">
+                <h3 className="text-lg font-semibold text-zinc-100 mb-4">Session Ingestion Statistics</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="text-center">
-                        <p className="text-3xl font-bold text-cyan-400">
-                            {integrations.filter(i => i.connected).length}
-                        </p>
+                        <p className="text-3xl font-bold text-cyan-400">{activeSources}</p>
                         <p className="text-xs text-zinc-500 mt-1">Active Sources</p>
                     </div>
                     <div className="text-center">
-                        <p className="text-3xl font-bold text-purple-400">1,247</p>
+                        <p className="text-3xl font-bold text-purple-400">{statsLoading ? "..." : totalChunks}</p>
                         <p className="text-xs text-zinc-500 mt-1">Items Collected</p>
                     </div>
                     <div className="text-center">
-                        <p className="text-3xl font-bold text-green-400">89%</p>
+                        <p className="text-3xl font-bold text-green-400">{statsLoading ? "..." : `${relevancePct}%`}</p>
                         <p className="text-xs text-zinc-500 mt-1">Relevant Content</p>
                     </div>
                     <div className="text-center">
-                        <p className="text-3xl font-bold text-yellow-400">3.2 GB</p>
-                        <p className="text-xs text-zinc-500 mt-1">Data Synced</p>
+                        <p className="text-3xl font-bold text-yellow-400">{statsLoading ? "..." : noiseChunks}</p>
+                        <p className="text-xs text-zinc-500 mt-1">Suppressed Items</p>
                     </div>
                 </div>
             </div>
