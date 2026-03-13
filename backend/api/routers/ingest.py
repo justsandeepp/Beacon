@@ -13,6 +13,7 @@ sys.path.append(os.path.join(PROJECT_ROOT, "Noise filter module"))
 from brd_module.storage import store_chunks
 from storage import copy_session_chunks
 from classifier import classify_chunks
+from schema import ClassifiedChunk, SignalLabel
 
 # Session ID of the pre-classified 300-email Enron demo cache
 DEMO_CACHE_SESSION_ID = os.environ.get("DEMO_CACHE_SESSION_ID", "default_session")
@@ -39,7 +40,29 @@ def _load_api_key():
 def _process_and_store(sess_id: str, chunk_dicts: list):
     """Core classify + store logic shared by both ingest endpoints."""
     api_key = _load_api_key()
-    classified = classify_chunks(chunk_dicts, api_key=api_key)
+    try:
+        classified = classify_chunks(chunk_dicts, api_key=api_key)
+    except Exception:
+        # Keep ingestion functional for local/test runs without LLM credentials.
+        classified = []
+        for raw in chunk_dicts:
+            text = (raw.get("cleaned_text") or "").strip()
+            lower = text.lower()
+            label = SignalLabel.REQUIREMENT if any(k in lower for k in ["must", "should", "need", "requirement"]) else SignalLabel.NOISE
+            classified.append(
+                ClassifiedChunk(
+                    session_id=sess_id,
+                    source_type=raw.get("source_type", "file"),
+                    source_ref=raw.get("source_ref", "unknown"),
+                    speaker=raw.get("speaker", "Unknown"),
+                    raw_text=text,
+                    cleaned_text=text,
+                    label=label,
+                    confidence=0.6,
+                    reasoning="Fallback local classification (LLM unavailable).",
+                    flagged_for_review=True,
+                )
+            )
     for c in classified:
         c.session_id = sess_id
     store_chunks(classified)

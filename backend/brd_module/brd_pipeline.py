@@ -6,7 +6,7 @@ import os
 import json
 import time
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional
 from datetime import datetime, timezone
 import concurrent.futures
 
@@ -433,7 +433,11 @@ Output ONLY the final markdown content for this section.
     create_new_version(session_id, None, 'executive_summary', content, 'system', snapshot_id=snapshot_id)
     return content
 
-def run_brd_generation(session_id: str, client: Groq = None) -> str:
+def run_brd_generation(
+    session_id: str,
+    client: Groq = None,
+    on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> str:
     """
     Main orchestration function for the BRD generation pipeline.
     Creates the snapshot, runs stages 2-6 in parallel, then runs stage 5 (executive summary).
@@ -442,10 +446,20 @@ def run_brd_generation(session_id: str, client: Groq = None) -> str:
         client = Groq(api_key=os.environ.get("GROQ_CLOUD_API", ""))
         
     print(f"[{session_id}] Starting BRD Generation...")
+
+    def emit(event: Dict[str, Any]) -> None:
+        if not on_progress:
+            return
+        try:
+            on_progress(event)
+        except Exception:
+            # Progress reporting must never break generation.
+            pass
     
     # Stage 1: Snapshot Creation
     snapshot_id = create_snapshot(session_id)
     print(f"[{session_id}] Snapshot {snapshot_id} created. Freezing DB state for this run.")
+    emit({"type": "snapshot_created", "session_id": session_id, "snapshot_id": snapshot_id})
     
     # Define the parallel agents (Stages 2, 3, 4, 6)
     agents_to_run = [
@@ -459,25 +473,37 @@ def run_brd_generation(session_id: str, client: Groq = None) -> str:
     
     # Run in parallel using ThreadPoolExecutor (max 4 as per BRD spec)
     print(f"[{session_id}] Launching {len(agents_to_run)} parallel agents...")
+    emit({"type": "agents_launched", "count": len(agents_to_run), "session_id": session_id})
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_agent = {
-            executor.submit(func, session_id, snapshot_id, client): name 
-            for name, func in agents_to_run
-        }
+        future_to_agent = {}
+        for name, func in agents_to_run:
+            emit({"type": "agent_started", "agent": name, "session_id": session_id})
+            future = executor.submit(func, session_id, snapshot_id, client)
+            future_to_agent[future] = name
         
         for future in concurrent.futures.as_completed(future_to_agent):
             name = future_to_agent[future]
             try:
                 future.result()
                 print(f"  → Agent completed: {name}")
+                emit({"type": "agent_completed", "agent": name, "session_id": session_id})
             except Exception as exc:
                 print(f"  → Agent failed: {name} generated an exception: {exc}")
+                emit({
+                    "type": "agent_failed",
+                    "agent": name,
+                    "session_id": session_id,
+                    "error": str(exc),
+                })
                 # The agent itself writes an error placeholder, so we just log and continue.
                 
     # Stage 5: Executive Summary (Runs last)
     print(f"[{session_id}] All parallel agents finished. Generating final Executive Summary...")
+    emit({"type": "agent_started", "agent": "executive_summary", "session_id": session_id})
     executive_summary_agent(session_id, snapshot_id, client)
+    emit({"type": "agent_completed", "agent": "executive_summary", "session_id": session_id})
     print(f"[{session_id}] BRD Generation complete.")
+    emit({"type": "generation_completed", "session_id": session_id, "snapshot_id": snapshot_id})
     
     return snapshot_id
 

@@ -212,22 +212,35 @@ def get_noise_items(session_id: str = None) -> List[ClassifiedChunk]:
 def restore_noise_item(chunk_id: str):
     """
     Manually restores a misclassified noise chunk back to an active signal.
-    Updates both the indexed columns and the JSONB payload.
+    Updates both the indexed columns and the serialized payload.
+    Supports both PostgreSQL and SQLite.
     """
-    conn = get_connection()
+    conn, db_type = get_connection()
     try:
-        with conn.cursor() as cur:
-            # We must update the index columns AND the JSONB data to keep them in sync.
-            cur.execute("""
-                UPDATE classified_chunks
-                SET suppressed = FALSE,
-                    manually_restored = TRUE,
-                    data = jsonb_set(
-                        jsonb_set(data, '{suppressed}', 'false'::jsonb),
-                        '{manually_restored}', 'true'::jsonb
-                    )
-                WHERE chunk_id = %s;
-            """, (chunk_id,))
+        cur = conn.cursor()
+        fetch_query = "SELECT data FROM classified_chunks WHERE chunk_id = %s"
+        if db_type == "sqlite":
+            fetch_query = fetch_query.replace("%s", "?")
+        cur.execute(fetch_query, (chunk_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Chunk {chunk_id} was not found.")
+
+        raw_data = row[0] if not isinstance(row, dict) else row.get("data")
+        payload = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+        payload["suppressed"] = False
+        payload["manually_restored"] = True
+
+        update_query = """
+            UPDATE classified_chunks
+            SET suppressed = %s,
+                manually_restored = %s,
+                data = %s
+            WHERE chunk_id = %s
+        """
+        if db_type == "sqlite":
+            update_query = update_query.replace("%s", "?")
+        cur.execute(update_query, (False, True, json.dumps(payload), chunk_id))
         conn.commit()
     finally:
         conn.close()

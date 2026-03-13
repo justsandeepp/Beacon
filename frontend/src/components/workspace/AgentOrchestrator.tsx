@@ -1,81 +1,178 @@
 "use client";
 
-import { useState } from 'react';
-import { Zap, CheckCircle2, Loader2, Eye } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Zap, CheckCircle2, Loader2, Eye, AlertTriangle } from 'lucide-react';
 import { motion } from 'framer-motion';
+import { streamBRDGeneration, type BRDStreamEventPayload } from '@/lib/apiClient';
 
-type AgentType = 'ingestion' | 'structure' | 'validation' | 'writing';
-type AgentStatus = 'idle' | 'working' | 'done';
+type AgentType =
+    | 'functional_requirements'
+    | 'stakeholder_analysis'
+    | 'timeline'
+    | 'decisions'
+    | 'assumptions'
+    | 'success_metrics'
+    | 'executive_summary'
+    | 'validation';
+
+type AgentStatus = 'idle' | 'working' | 'done' | 'error';
 
 const agents = [
-    { id: 'ingestion' as AgentType, name: 'Ingestion Agent', description: 'Collects and filters raw data', icon: '📥' },
-    { id: 'structure' as AgentType, name: 'Structure Agent', description: 'Organizes data into categories', icon: '🗂️' },
-    { id: ' validation' as AgentType, name: 'Validation Agent', description: 'Checks for conflicts & completeness', icon: '✓' },
-    { id: 'writing' as AgentType, name: 'Writing Agent', description: 'Generates BRD content', icon: '✍️' }
+    { id: 'functional_requirements' as AgentType, name: 'Functional Requirements Agent', description: 'Extracts and drafts system requirements', icon: 'FR' },
+    { id: 'stakeholder_analysis' as AgentType, name: 'Stakeholder Analysis Agent', description: 'Builds stakeholder mapping and concerns', icon: 'SA' },
+    { id: 'timeline' as AgentType, name: 'Timeline Agent', description: 'Compiles milestones and deadlines', icon: 'TL' },
+    { id: 'decisions' as AgentType, name: 'Decisions Agent', description: 'Collects confirmed project decisions', icon: 'DC' },
+    { id: 'assumptions' as AgentType, name: 'Assumptions Agent', description: 'Infers assumptions requiring validation', icon: 'AS' },
+    { id: 'success_metrics' as AgentType, name: 'Success Metrics Agent', description: 'Defines measurable outcome metrics', icon: 'SM' },
+    { id: 'executive_summary' as AgentType, name: 'Executive Summary Agent', description: 'Synthesizes final BRD summary', icon: 'EX' },
+    { id: 'validation' as AgentType, name: 'Validation Agent', description: 'Runs validation checks after generation', icon: 'VD' },
 ];
 
 export default function AgentOrchestrator({ projectId }: { projectId: string }) {
     const [agentStatuses, setAgentStatuses] = useState<Record<AgentType, AgentStatus>>({
-        ingestion: 'idle',
-        structure: 'idle',
+        functional_requirements: 'idle',
+        stakeholder_analysis: 'idle',
+        timeline: 'idle',
+        decisions: 'idle',
+        assumptions: 'idle',
+        success_metrics: 'idle',
+        executive_summary: 'idle',
         validation: 'idle',
-        writing: 'idle'
     });
     const [isGenerating, setIsGenerating] = useState(false);
     const [thoughtProcess, setThoughtProcess] = useState<string[]>([]);
+    const [error, setError] = useState<string | null>(null);
+    const streamCleanupRef = useRef<(() => void) | null>(null);
+
+    useEffect(() => {
+        return () => {
+            streamCleanupRef.current?.();
+            streamCleanupRef.current = null;
+        };
+    }, []);
+
+    const appendThought = (line: string) => {
+        setThoughtProcess((prev) => [...prev, line]);
+    };
+
+    const resetStatuses = () => {
+        setAgentStatuses({
+            functional_requirements: 'idle',
+            stakeholder_analysis: 'idle',
+            timeline: 'idle',
+            decisions: 'idle',
+            assumptions: 'idle',
+            success_metrics: 'idle',
+            executive_summary: 'idle',
+            validation: 'idle',
+        });
+    };
+
+    const markAgent = (agent: AgentType, status: AgentStatus) => {
+        setAgentStatuses((prev) => ({ ...prev, [agent]: status }));
+    };
+
+    const mapAgentName = (agent: string): AgentType | null => {
+        if (
+            agent === 'functional_requirements' ||
+            agent === 'stakeholder_analysis' ||
+            agent === 'timeline' ||
+            agent === 'decisions' ||
+            agent === 'assumptions' ||
+            agent === 'success_metrics' ||
+            agent === 'executive_summary' ||
+            agent === 'validation'
+        ) {
+            return agent;
+        }
+        return null;
+    };
 
     const startGeneration = async () => {
+        streamCleanupRef.current?.();
+        streamCleanupRef.current = null;
+
         setIsGenerating(true);
         setThoughtProcess([]);
+        setError(null);
+        resetStatuses();
 
-        const workflow = [
-            {
-                agent: 'ingestion' as AgentType, thoughts: [
-                    'Analyzing connected data sources...',
-                    'Found 245 Slack messages, 42 emails, 3 meeting transcripts',
-                    'Applying noise filter to remove non-project content...',
-                    'Extracted 35 relevant data points'
-                ]
-            },
-            {
-                agent: 'structure' as AgentType, thoughts: [
-                    'Categorizing requirements by type...',
-                    'Identified: 12 functional, 8 non-functional requirements',
-                    'Grouping stakeholder inputs by theme',
-                    'Mapped timeline milestones from meeting notes'
-                ]
-            },
-            {
-                agent: 'validation' as AgentType, thoughts: [
-                    'Checking for requirement conflicts...',
-                    'Found 2 medium-severity conflicts',
-                    'Verifying completeness against BRD template...',
-                    'All sections have supporting data'
-                ]
-            },
-            {
-                agent: 'writing' as AgentType, thoughts: [
-                    'Generating Executive Summary...',
-                    'Writing Functional Requirements section...',
-                    'Adding citations to source data...',
-                    'BRD generation complete!'
-                ]
+        const sessionId = projectId;
+        const applyEvent = (payload: BRDStreamEventPayload) => {
+            switch (payload.type) {
+                case 'generation_started':
+                    appendThought('[SYSTEM] BRD generation started');
+                    break;
+                case 'snapshot_created':
+                    appendThought('[SYSTEM] Snapshot created');
+                    break;
+                case 'agents_launched':
+                    appendThought('[SYSTEM] Parallel agents launched');
+                    break;
+                case 'agent_started': {
+                    const mapped = mapAgentName(payload.agent ?? '');
+                    if (mapped) {
+                        markAgent(mapped, 'working');
+                        appendThought(`[${mapped.toUpperCase()}] Started`);
+                    }
+                    break;
+                }
+                case 'agent_completed': {
+                    const mapped = mapAgentName(payload.agent ?? '');
+                    if (mapped) {
+                        markAgent(mapped, 'done');
+                        appendThought(`[${mapped.toUpperCase()}] Completed`);
+                    }
+                    break;
+                }
+                case 'agent_failed': {
+                    const mapped = mapAgentName(payload.agent ?? '');
+                    if (mapped) {
+                        markAgent(mapped, 'error');
+                    }
+                    appendThought(`[${(payload.agent ?? 'UNKNOWN').toUpperCase()}] Failed: ${payload.error ?? 'Unknown error'}`);
+                    break;
+                }
+                case 'validation_started':
+                    markAgent('validation', 'working');
+                    appendThought('[VALIDATION] Started');
+                    break;
+                case 'validation_completed':
+                    markAgent('validation', 'done');
+                    appendThought('[VALIDATION] Completed');
+                    break;
+                case 'complete':
+                    appendThought('[SYSTEM] BRD generation completed');
+                    setIsGenerating(false);
+                    streamCleanupRef.current = null;
+                    break;
+                case 'error':
+                    setError(payload.message ?? 'Generation failed');
+                    setIsGenerating(false);
+                    appendThought(`[SYSTEM] ERROR: ${payload.message ?? 'Generation failed'}`);
+                    streamCleanupRef.current = null;
+                    break;
+                default:
+                    if (payload.message) {
+                        appendThought(`[SYSTEM] ${payload.message}`);
+                    }
+                    break;
             }
-        ];
+        };
 
-        for (const step of workflow) {
-            setAgentStatuses((prev) => ({ ...prev, [step.agent]: 'working' }));
-
-            for (const thought of step.thoughts) {
-                await new Promise((resolve) => setTimeout(resolve, 1200));
-                setThoughtProcess((prev) => [...prev, `[${step.agent.toUpperCase()}] ${thought}`]);
-            }
-
-            setAgentStatuses((prev) => ({ ...prev, [step.agent]: 'done' }));
-            await new Promise((resolve) => setTimeout(resolve, 800));
-        }
-
-        setIsGenerating(false);
+        streamCleanupRef.current = streamBRDGeneration(sessionId, {
+            onEvent: applyEvent,
+            onDone: () => {
+                setIsGenerating(false);
+                streamCleanupRef.current = null;
+            },
+            onError: (message) => {
+                setError(message);
+                setIsGenerating(false);
+                appendThought(`[SYSTEM] ${message}`);
+                streamCleanupRef.current = null;
+            },
+        });
     };
 
     return (
@@ -88,7 +185,7 @@ export default function AgentOrchestrator({ projectId }: { projectId: string }) 
                 </div>
                 <button
                     onClick={startGeneration}
-                    disabled={isGenerating}
+                    disabled={isGenerating || !projectId}
                     className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 disabled:from-zinc-800 disabled:to-zinc-800 disabled:text-zinc-500 text-white rounded-lg font-medium shadow-lg shadow-cyan-500/20 transition-all"
                 >
                     <Zap size={18} />
@@ -96,8 +193,15 @@ export default function AgentOrchestrator({ projectId }: { projectId: string }) 
                 </button>
             </div>
 
+            {error && (
+                <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                    <AlertTriangle size={14} />
+                    {error}
+                </div>
+            )}
+
             {/* Agent Cards */}
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
                 {agents.map((agent, index) => {
                     const status = agentStatuses[agent.id];
                     const isActive = status === 'working';
@@ -111,7 +215,7 @@ export default function AgentOrchestrator({ projectId }: { projectId: string }) 
                             className={`bg-zinc-900/50 border rounded-xl p-6 transition-all ${isActive ? 'border-cyan-500 shadow-lg shadow-cyan-500/20' : status === 'done' ? 'border-green-500/50' : 'border-white/5'
                                 }`}
                         >
-                            <div className="text-3xl mb-3">{agent.icon}</div>
+                            <div className="text-sm font-mono text-zinc-300 mb-3">{agent.icon}</div>
                             <h4 className="font-semibold text-zinc-100 mb-1">{agent.name}</h4>
                             <p className="text-xs text-zinc-400 mb-4">{agent.description}</p>
 
@@ -127,6 +231,12 @@ export default function AgentOrchestrator({ projectId }: { projectId: string }) 
                                     <div className="flex items-center gap-2 text-green-400 text-xs">
                                         <CheckCircle2 size={12} />
                                         Complete
+                                    </div>
+                                )}
+                                {status === 'error' && (
+                                    <div className="flex items-center gap-2 text-red-400 text-xs">
+                                        <AlertTriangle size={12} />
+                                        Failed
                                     </div>
                                 )}
                             </div>

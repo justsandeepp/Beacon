@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     CheckCircle2, AlertTriangle, Lock, Edit3, RefreshCw,
-    ChevronDown, ChevronUp, X, Eye, RotateCcw, Link as LinkIcon,
+    ChevronDown, ChevronUp, Eye, RotateCcw,
     Clock, FileText, Unlock, Loader2, Zap, Share2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -32,6 +32,7 @@ interface BRDSection {
     flagSeverity?: 'high' | 'medium' | 'low';
     flagDescription?: string;
     missingSignals?: string[];
+    snapshotId?: string | null;
 }
 
 interface ValidationFlag {
@@ -74,14 +75,22 @@ function SectionCard({
     section,
     onViewAttribution,
     onViewHistory,
+    onSave,
+    saving,
 }: {
     section: BRDSection;
     onViewAttribution: (s: BRDSection) => void;
     onViewHistory: (s: BRDSection) => void;
+    onSave: (section: BRDSection, nextContent: string) => Promise<void>;
+    saving: boolean;
 }) {
     const [editing, setEditing] = useState(false);
     const [editContent, setEditContent] = useState(section.content ?? '');
     const [flagAcknowledged, setFlagAcknowledged] = useState(false);
+
+    useEffect(() => {
+        setEditContent(section.content ?? '');
+    }, [section.content, section.id]);
 
     return (
         <div
@@ -122,7 +131,18 @@ function SectionCard({
                     <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-0.5">
                             <span className="text-xs font-semibold text-red-300">{section.flagType}</span>
-                            <span className="glass-badge badge-severity-high text-[9px]">HIGH</span>
+                            <span
+                                className={cn(
+                                    "glass-badge text-[9px]",
+                                    section.flagSeverity === 'high'
+                                        ? 'badge-severity-high'
+                                        : section.flagSeverity === 'medium'
+                                            ? 'badge-severity-medium'
+                                            : 'badge-severity-low'
+                                )}
+                            >
+                                {(section.flagSeverity ?? 'medium').toUpperCase()}
+                            </span>
                         </div>
                         <p className="text-xs text-red-200/70">{section.flagDescription}</p>
                     </div>
@@ -170,7 +190,16 @@ function SectionCard({
                         <span className="text-[10px] text-zinc-600 font-mono">{editContent.length} chars</span>
                         <div className="flex gap-2">
                             <button onClick={() => setEditing(false)} className="btn-ghost text-xs py-1.5">Cancel</button>
-                            <button onClick={() => setEditing(false)} className="btn-primary text-xs py-1.5">Save Changes</button>
+                            <button
+                                onClick={async () => {
+                                    await onSave(section, editContent);
+                                    setEditing(false);
+                                }}
+                                disabled={saving}
+                                className="btn-primary text-xs py-1.5 disabled:opacity-50"
+                            >
+                                {saving ? 'Saving...' : 'Save Changes'}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -204,8 +233,6 @@ export default function BRDPage() {
     const [histDrawer, setHistDrawer] = useState<BRDSection | null>(null);
     const [flagsExpanded, setFlagsExpanded] = useState(false);
     const [flags, setFlags] = useState<ValidationFlag[]>([]);
-    const [editingId, setEditingId] = useState<string | null>(null);
-    const [editContent, setEditContent] = useState('');
     const [shareOpen, setShareOpen] = useState(false);
 
     // Build a minimal Board object for the ShareBoardModal
@@ -230,24 +257,34 @@ export default function BRDPage() {
         setFlags(apiFlags.map((f, i) => ({ id: String(i), section: f.section_name, type: f.flag_type, severity: f.severity, description: f.description, acknowledged: false })));
     }, [apiFlags]);
 
-    const handleSave = async (sectionId: string) => {
-        await updateSection(sessionId, sectionId, editContent);
-        setEditingId(null);
+    const handleSave = async (section: BRDSection, nextContent: string) => {
+        await updateSection(sessionId, section.id, nextContent);
     };
 
     // Build display sections by merging API content with metadata
     const displaySections: BRDSection[] = SECTION_META.map(meta => {
         const storeSection = sections.find(s => s.id === meta.id);
-        const flagForSection = flags.find(f => f.section.toLowerCase().includes(meta.title.toLowerCase()));
+        const flagForSection = flags.find(f => f.section === meta.id && !f.acknowledged);
         const content = storeSection?.content ?? '';
-        const status: SectionStatus = storeSection?.humanEdited ? 'human_edited' : content ? (flagForSection && !flagForSection.acknowledged ? 'flagged' : 'generated') : 'insufficient';
+        const hasInsufficientData = content.toLowerCase().includes('insufficient data');
+        const status: SectionStatus = storeSection?.humanEdited
+            ? 'human_edited'
+            : flagForSection
+                ? 'flagged'
+                : !content || hasInsufficientData
+                    ? 'insufficient'
+                    : 'generated';
         return {
             id: meta.id, number: meta.number, title: meta.title,
-            version: 'v1', status, content,
+            version: `v${storeSection?.version ?? 1}`, status, content,
             flagType: flagForSection?.type,
             flagSeverity: flagForSection?.severity,
             flagDescription: flagForSection?.description,
-            sourceCount: content ? Math.floor(content.length / 50) : undefined,
+            sourceCount: storeSection?.sourceChunkIds?.length ?? undefined,
+            timestamp: storeSection?.generatedAt
+                ? new Date(storeSection.generatedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+                : undefined,
+            snapshotId: storeSection?.snapshotId ?? null,
         };
     });
 
@@ -396,6 +433,8 @@ export default function BRDPage() {
                                 section={sec}
                                 onViewAttribution={s => setAttrDrawer(s)}
                                 onViewHistory={s => setHistDrawer(s)}
+                                onSave={handleSave}
+                                saving={loading}
                             />
                         </motion.div>
                     ))}

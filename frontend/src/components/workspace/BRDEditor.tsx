@@ -1,35 +1,79 @@
-// @ts-nocheck
 "use client";
 
-import { useBRDStore } from '@/store/useBRDStore';
-import { useState } from 'react';
-import { Bold, Italic, List, Download, MessageSquare, Link2, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Download, Loader2, Lock, Save, Sparkles } from "lucide-react";
+import { useBRDStore } from "@/store/useBRDStore";
+import { exportBRD } from "@/lib/apiClient";
 
 export default function BRDEditor({ projectId }: { projectId: string }) {
-    const { sections, updateSection, addCitation, generateSection } = useBRDStore();
-    const [activeSectionId, setActiveSectionId] = useState('exec-summary');
-    const [activeRightTab, setActiveRightTab] = useState<'citations' | 'ai'>('citations');
-    const [aiPrompt, setAiPrompt] = useState('');
-    const [isGenerating, setIsGenerating] = useState(false);
+    const {
+        sections,
+        flags,
+        loading,
+        generating,
+        error,
+        loadBRD,
+        updateSection,
+        generateAll,
+    } = useBRDStore();
 
-    const activeSection = sections.find((s) => s.id === activeSectionId);
+    const [activeSectionId, setActiveSectionId] = useState<string>("executive_summary");
+    const [draft, setDraft] = useState("");
+    const [saving, setSaving] = useState(false);
+    const [exporting, setExporting] = useState(false);
 
-    const handleGenerate = async () => {
-        if (!activeSectionId) return;
-        setIsGenerating(true);
-        await generateSection(activeSectionId);
-        setIsGenerating(false);
+    useEffect(() => {
+        if (!projectId) {
+            return;
+        }
+        loadBRD(projectId);
+    }, [projectId, loadBRD]);
+
+    const activeSection = useMemo(
+        () => sections.find((s) => s.id === activeSectionId) ?? sections[0],
+        [sections, activeSectionId]
+    );
+
+    useEffect(() => {
+        setDraft(activeSection?.content ?? "");
+        if (!activeSection && sections.length > 0) {
+            setActiveSectionId(sections[0].id);
+        }
+    }, [activeSection?.id, activeSection?.content, sections]);
+
+    const sectionFlags = useMemo(
+        () => flags.filter((f) => f.section_name === activeSection?.id),
+        [flags, activeSection?.id]
+    );
+
+    const globalFlags = useMemo(
+        () => flags.filter((f) => f.section_name === "cross_section"),
+        [flags]
+    );
+
+    const handleSave = async () => {
+        if (!activeSection || !projectId) {
+            return;
+        }
+        setSaving(true);
+        await updateSection(projectId, activeSection.id, draft);
+        setSaving(false);
     };
 
-    const handleAIEdit = () => {
-        // Simulate AI editing
-        setAiPrompt('');
-        alert(`AI would process: "${aiPrompt}"`);
+    const handleExport = async () => {
+        if (!projectId) {
+            return;
+        }
+        setExporting(true);
+        try {
+            await exportBRD(projectId, "docx");
+        } finally {
+            setExporting(false);
+        }
     };
 
     return (
         <div className="grid grid-cols-12 gap-6">
-            {/* Left: Document Outline */}
             <div className="col-span-3 bg-zinc-900/50 border border-white/5 rounded-xl p-4 h-[700px] overflow-y-auto">
                 <h3 className="font-semibold text-zinc-100 mb-4">Document Outline</h3>
                 <div className="space-y-1">
@@ -38,162 +82,96 @@ export default function BRDEditor({ projectId }: { projectId: string }) {
                             key={section.id}
                             onClick={() => setActiveSectionId(section.id)}
                             className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${activeSectionId === section.id
-                                ? 'bg-cyan-500/10 text-cyan-400 border-l-2 border-cyan-500'
-                                : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                                ? "bg-cyan-500/10 text-cyan-400 border-l-2 border-cyan-500"
+                                : "text-zinc-400 hover:text-zinc-100 hover:bg-white/5"
                                 }`}
                         >
-                            {section.title}
-                            {section.content && (
-                                <div className="w-2 h-2 bg-green-500 rounded-full ml-auto mt-1" />
-                            )}
+                            <div className="flex items-center gap-2">
+                                <span className="flex-1 truncate">{section.title}</span>
+                                {section.humanEdited && <Lock size={11} className="text-yellow-400" />}
+                            </div>
                         </button>
                     ))}
                 </div>
             </div>
 
-            {/* Center: Editor */}
             <div className="col-span-6 space-y-4">
                 <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-zinc-100">{activeSection?.title}</h3>
-                    <button
-                        onClick={handleGenerate}
-                        disabled={isGenerating}
-                        className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 text-purple-400 rounded-lg text-sm transition-colors disabled:opacity-50"
-                    >
-                        <Sparkles size={14} />
-                        {isGenerating ? 'Generating...' : 'AI Generate'}
-                    </button>
+                    <h3 className="text-lg font-semibold text-zinc-100">{activeSection?.title ?? "BRD Section"}</h3>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => generateAll(projectId)}
+                            disabled={generating || !projectId}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/20 text-purple-400 rounded-lg text-sm transition-colors disabled:opacity-50"
+                        >
+                            {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                            {generating ? "Generating..." : "Generate BRD"}
+                        </button>
+                        <button
+                            onClick={handleSave}
+                            disabled={saving || loading || !activeSection}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg text-sm transition-colors disabled:opacity-50"
+                        >
+                            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                            Save
+                        </button>
+                        <button
+                            onClick={handleExport}
+                            disabled={exporting || !projectId}
+                            className="flex items-center gap-2 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-sm transition-colors disabled:opacity-50"
+                        >
+                            {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                            Export DOCX
+                        </button>
+                    </div>
                 </div>
 
-                {/* Toolbar */}
-                <div className="flex items-center gap-2 p-2 bg-zinc-900/50 border border-white/5 rounded-lg">
-                    <button className="p-2 hover:bg-white/10 rounded transition-colors text-zinc-400 hover:text-zinc-100">
-                        <Bold size={16} />
-                    </button>
-                    <button className="p-2 hover:bg-white/10 rounded transition-colors text-zinc-400 hover:text-zinc-100">
-                        <Italic size={16} />
-                    </button>
-                    <button className="p-2 hover:bg-white/10 rounded transition-colors text-zinc-400 hover:text-zinc-100">
-                        <List size={16} />
-                    </button>
-                    <div className="flex-1" />
-                    <button className="flex items-center gap-2 px-3 py-1.5 bg-cyan-500 hover:bg-cyan-600 text-white rounded text-sm transition-colors">
-                        <Download size={14} />
-                        Export PDF
-                    </button>
-                </div>
+                {error && (
+                    <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                        <AlertTriangle size={14} />
+                        {error}
+                    </div>
+                )}
 
-                {/* Content Editor */}
                 <textarea
-                    value={activeSection?.content || ''}
-                    onChange={(e) => activeSectionId && updateSection(activeSectionId, e.target.value)}
-                    placeholder={`Write ${activeSection?.title} here... or click AI Generate`}
-                    className="w-full h-[580px] bg-zinc-900/50 border border-white/5 rounded-xl p-6 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-sans resize-none"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder={activeSection ? `Edit ${activeSection.title}...` : "Generate BRD first"}
+                    className="w-full h-[620px] bg-zinc-900/50 border border-white/5 rounded-xl p-6 text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-sans resize-none"
                 />
             </div>
 
-            {/* Right: Citations & AI */}
             <div className="col-span-3 space-y-4">
-                <div className="flex gap-2">
-                    <button
-                        onClick={() => setActiveRightTab('citations')}
-                        className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeRightTab === 'citations'
-                            ? 'bg-cyan-500/10 text-cyan-400'
-                            : 'text-zinc-400 hover:text-zinc-100'
-                            }`}
-                    >
-                        Citations
-                    </button>
-                    <button
-                        onClick={() => setActiveRightTab('ai')}
-                        className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeRightTab === 'ai'
-                            ? 'bg-cyan-500/10 text-cyan-400'
-                            : 'text-zinc-400 hover:text-zinc-100'
-                            }`}
-                    >
-                        Ask AI
-                    </button>
-                </div>
-
-                <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-4 h-[650px] overflow-y-auto">
-                    {activeRightTab === 'citations' ? (
-                        <div className="space-y-3">
-                            <h4 className="text-sm font-semibold text-zinc-100 mb-3">Source Evidence</h4>
-                            {activeSection?.citations && activeSection.citations.length > 0 ? (
-                                activeSection.citations.map((citation, index) => (
-                                    <div key={index} className="p-3 bg-zinc-950/50 rounded-lg border border-white/5">
-                                        <div className="flex items-start gap-2">
-                                            <Link2 size={14} className="text-cyan-400 mt-0.5" />
-                                            <p className="text-xs text-zinc-300">{citation}</p>
-                                        </div>
-                                    </div>
-                                ))
-                            ) : (
-                                <div className="text-center py-12">
-                                    <p className="text-zinc-600 text-sm">No citations yet</p>
-                                    <p className="text-zinc-700 text-xs mt-2">Add source links to support requirements</p>
-                                </div>
-                            )}
-
-                            <div className="space-y-2 pt-4 border-t border-white/5">
-                                <p className="text-xs text-zinc-400">Sample Citations:</p>
-                                {[
-                                    'Slack #general - Dec 15, 10:30 AM',
-                                    'Email from john@company.com',
-                                    'Product Meeting Notes - Week 3'
-                                ].map((sample, index) => (
-                                    <button
-                                        key={index}
-                                        onClick={() => activeSectionId && addCitation(activeSectionId, sample)}
-                                        className="w-full text-left p-2 bg-zinc-950/50 hover:bg-white/5 rounded border border-white/5 text-xs text-zinc-400 hover:text-cyan-400 transition-colors"
-                                    >
-                                        + {sample}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
+                <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-4 h-[700px] overflow-y-auto">
+                    <h4 className="text-sm font-semibold text-zinc-100 mb-3">Validation Flags</h4>
+                    {sectionFlags.length === 0 && globalFlags.length === 0 ? (
+                        <p className="text-xs text-zinc-500">No validation flags for this section.</p>
                     ) : (
-                        <div className="space-y-4">
-                            <h4 className="text-sm font-semibold text-zinc-100">AI Assistant</h4>
-                            <p className="text-xs text-zinc-400">Ask the AI to edit or improve this section</p>
-
-                            <div className="space-y-2">
-                                <input
-                                    type="text"
-                                    value={aiPrompt}
-                                    onChange={(e) => setAiPrompt(e.target.value)}
-                                    placeholder="e.g., Make this more concise"
-                                    className="w-full px-3 py-2 bg-zinc-950 border border-white/10 rounded-lg text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-purple-500"
-                                />
-                                <button
-                                    onClick={handleAIEdit}
-                                    disabled={!aiPrompt}
-                                    className="w-full px-3 py-2 bg-purple-500 hover:bg-purple-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white rounded-lg text-sm font-medium transition-colors"
+                        <div className="space-y-2">
+                            {[...sectionFlags, ...globalFlags].map((flag, index) => (
+                                <div
+                                    key={`${flag.section_name}-${index}`}
+                                    className="p-3 bg-zinc-950/50 rounded-lg border border-white/5"
                                 >
-                                    <MessageSquare size={14} className="inline mr-2" />
-                                    Send
-                                </button>
-                            </div>
-
-                            <div className="space-y-2 pt-4 border-t border-white/5">
-                                <p className="text-xs text-zinc-400">Quick Actions:</p>
-                                {[
-                                    'Expand this section',
-                                    'Add more technical details',
-                                    'Simplify language',
-                                    'Add success criteria'
-                                ].map((action, index) => (
-                                    <button
-                                        key={index}
-                                        onClick={() => setAiPrompt(action)}
-                                        className="w-full text-left p-2 bg-zinc-950/50 hover:bg-white/5 rounded border border-white/5 text-xs text-zinc-400 hover:text-purple-400 transition-colors"
-                                    >
-                                        {action}
-                                    </button>
-                                ))}
-                            </div>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[10px] text-zinc-500 uppercase">{flag.flag_type}</span>
+                                        <span className="text-[10px] text-red-300 uppercase">{flag.severity}</span>
+                                    </div>
+                                    <p className="text-xs text-zinc-300 mt-1">{flag.description}</p>
+                                </div>
+                            ))}
                         </div>
                     )}
+
+                    <div className="mt-6 pt-4 border-t border-white/5">
+                        <h4 className="text-sm font-semibold text-zinc-100 mb-3">Section Metadata</h4>
+                        <div className="space-y-2 text-xs text-zinc-400">
+                            <p>Version: <span className="font-mono text-zinc-300">v{activeSection?.version ?? 1}</span></p>
+                            <p>Locked: <span className="font-mono text-zinc-300">{activeSection?.humanEdited ? "Yes" : "No"}</span></p>
+                            <p>Sources: <span className="font-mono text-zinc-300">{activeSection?.sourceChunkIds?.length ?? 0}</span></p>
+                            <p>Snapshot: <span className="font-mono text-zinc-300">{activeSection?.snapshotId ?? "-"}</span></p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

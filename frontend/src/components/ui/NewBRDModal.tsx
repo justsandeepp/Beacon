@@ -46,7 +46,7 @@ export default function NewBRDModal({ open, onClose }: Props) {
             setName('');
             setDescription('');
             onClose();
-            router.push(`/brd/new?name=${encodeURIComponent(savedName)}&id=${sessionId}`);
+            router.push(`/ingestion?session=${sessionId}&name=${encodeURIComponent(savedName)}`);
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Something went wrong');
         } finally {

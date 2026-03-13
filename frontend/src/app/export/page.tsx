@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
-import { exportBRD } from '@/lib/apiClient';
+import { exportBRD, type ExportFormat } from '@/lib/apiClient';
 import { useSessionStore } from '@/store/useSessionStore';
 
 // ─── Mock checklist ───────────────────────────────────────────────────────────
@@ -29,8 +29,6 @@ const CHECKLIST: CheckItem[] = [
     { id: 'c5', label: 'Session has a name', description: 'Session: "Hackfest Demo Session"', status: 'ok' },
 ];
 
-type ExportFormat = 'markdown' | 'docx';
-
 const FORMAT_CARDS = [
     {
         id: 'markdown' as ExportFormat,
@@ -45,6 +43,13 @@ const FORMAT_CARDS = [
         icon: <Table2 size={22} className="text-blue-300" />,
         desc: 'Template-based layout with table of contents and figure captions.',
         sub: 'Template-based layout',
+    },
+    {
+        id: 'html' as ExportFormat,
+        label: 'HTML',
+        icon: <File size={22} className="text-amber-300" />,
+        desc: 'Styled document with headings, tables, and validation highlights.',
+        sub: 'Web-friendly export',
     },
 ];
 

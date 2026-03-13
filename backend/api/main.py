@@ -6,7 +6,7 @@ import sys
 # Add the parent directory and nested modules so we can import them
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from .routers import sessions, ingest, review, brd, hitl
+from .routers import sessions, ingest, review, brd, hitl, slack
 from brd_module.storage import init_db
 
 # Initialize database (PG or SQLite fallback) on startup
@@ -35,6 +35,7 @@ app.include_router(ingest.router)
 app.include_router(review.router)
 app.include_router(brd.router)
 app.include_router(hitl.router)
+app.include_router(slack.router)
 
 @app.get("/")
 def read_root():

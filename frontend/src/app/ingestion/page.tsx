@@ -4,11 +4,12 @@ import { useState, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Hash, Mail, Upload, CheckCircle2, AlertCircle, Database,
-    Eye, RefreshCw, Trash2, FileText, File, Table2, X, Loader2
+    Eye, RefreshCw, Trash2, FileText, File, Table2, X, Loader2, RotateCcw, ArrowRight
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Drawer from '@/components/ui/Drawer';
-import { uploadFile, ingestDemoDataset, getChunks, createSession, type Chunk } from '@/lib/apiClient';
+import Link from 'next/link';
+import { uploadFile, ingestDemoDataset, getChunks, restoreChunk, createSession, type Chunk } from '@/lib/apiClient';
 import { useSessionStore } from '@/store/useSessionStore';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -61,6 +62,10 @@ export default function IngestionPage() {
 
     const [channels, setChannels] = useState(CHANNELS);
     const [expandedChunk, setExpandedChunk] = useState<string | null>(null);
+    const [reviewLoading, setReviewLoading] = useState(false);
+    const [activeSignals, setActiveSignals] = useState<Chunk[]>([]);
+    const [suppressedSignals, setSuppressedSignals] = useState<Chunk[]>([]);
+    const [restoringChunkId, setRestoringChunkId] = useState<string | null>(null);
 
     const toggleChannel = (name: string) =>
         setChannels(prev => prev.map(c => c.name === name ? { ...c, selected: !c.selected } : c));
@@ -86,7 +91,17 @@ export default function IngestionPage() {
         setUploadedFiles(prev => prev.filter(f => f.name !== name));
 
     const processFiles = async () => {
-        if (!sessionId) {
+        let sid = sessionId;
+        if (!sid && user) {
+            try {
+                const res = await createSession();
+                sid = res.session_id;
+                await addSession('Untitled Session', 'Auto-created during file ingestion', user.uid, sid);
+            } catch {
+                sid = '';
+            }
+        }
+        if (!sid) {
             setUploadError('No active session. Create one from the Dashboard.');
             return;
         }
@@ -102,7 +117,7 @@ export default function IngestionPage() {
             try {
                 const ext = uf.ext.toLowerCase();
                 const sourceType = ext === 'csv' ? 'csv' : 'file';
-                const result = await uploadFile(sessionId, uf.rawFile, sourceType);
+                const result = await uploadFile(sid, uf.rawFile, sourceType);
                 setUploadedFiles(prev => prev.map(f =>
                     f.name === uf.name ? { ...f, status: 'done', chunkCount: result.chunk_count } : f
                 ));
@@ -115,6 +130,7 @@ export default function IngestionPage() {
             }
         }
         setUploading(false);
+        await refreshReviewGate(sid);
     };
 
     const processDemoDataset = async () => {
@@ -122,31 +138,6 @@ export default function IngestionPage() {
         setUploadError(null);
         setDemoResult(null);
         setDemoLogs([]);
-
-        const logLines = [
-            "Initializing Noise Filter pipeline...",
-            "Connecting to Enron mail corpus cache (200 docs)...",
-            "Applying heuristic RegEx rules for system mail & social noise...",
-            "Filtered chunks as pure noise (fast path).",
-            "Batching remaining chunks for LLM classification...",
-            "Connecting to Groq API (Llama 4 Maverick)...",
-            "Classifying batch 1/4...",
-            "Classifying batch 2/4...",
-            "Classifying batch 3/4...",
-            "Classifying batch 4/4...",
-            "Writing classified chunks to Attributed Knowledge Store (AKS)...",
-            "Pipeline complete."
-        ];
-
-        let i = 0;
-        const interval = setInterval(() => {
-            if (i < logLines.length) {
-                // Not the real time, just a log format
-                const time = new Date().toISOString().split('T')[1].slice(0, 12);
-                setDemoLogs(prev => [...prev, `[${time}] ${logLines[i]}`]);
-                i++;
-            }
-        }, 800);
 
         try {
             // Auto-create a session if one doesn't exist yet
@@ -160,20 +151,60 @@ export default function IngestionPage() {
                 }
                 await addSession('Demo Session', 'Auto-created for Enron demo dataset', user.uid, sid);
             }
-            const res = await ingestDemoDataset(sid, 200);
-            clearInterval(interval);
 
-            const time = new Date().toISOString().split('T')[1].slice(0, 12);
-            setDemoLogs(prev => [...prev, `[${time}] ✅ Success: ${res.chunk_count} chunks stored.`]);
-            setDemoResult(`✅ Demo dataset loaded — ${res.chunk_count} email chunks classified and stored.`);
+            const res = await ingestDemoDataset(sid, 200, (line) => {
+                const time = new Date().toISOString().split('T')[1].slice(0, 12);
+                setDemoLogs(prev => [...prev, `[${time}] ${line}`]);
+            });
+
+            if (res.logs.length === 0) {
+                const time = new Date().toISOString().split('T')[1].slice(0, 12);
+                setDemoLogs(prev => [...prev, `[${time}] Demo ingestion completed.`]);
+            }
+            setDemoResult(`✅ ${res.message}`);
+            await refreshReviewGate(sid);
         } catch (e) {
-            clearInterval(interval);
             const time = new Date().toISOString().split('T')[1].slice(0, 12);
             const msg = e instanceof Error ? e.message : 'Demo ingestion failed';
             setDemoLogs(prev => [...prev, `[${time}] ❌ ERROR: ${msg}`]);
             setUploadError(msg);
         } finally {
             setDemoLoading(false);
+        }
+    };
+
+    const refreshReviewGate = async (sidOverride?: string) => {
+        const sid = sidOverride ?? sessionId;
+        if (!sid) {
+            setActiveSignals([]);
+            setSuppressedSignals([]);
+            return;
+        }
+        setReviewLoading(true);
+        try {
+            const [activeRes, noiseRes] = await Promise.all([
+                getChunks(sid, 'signal'),
+                getChunks(sid, 'noise'),
+            ]);
+            setActiveSignals(activeRes.chunks);
+            setSuppressedSignals(noiseRes.chunks);
+        } catch (e) {
+            setUploadError(e instanceof Error ? e.message : 'Failed to load classified chunks');
+        } finally {
+            setReviewLoading(false);
+        }
+    };
+
+    const restoreSuppressedChunk = async (chunkId: string) => {
+        if (!sessionId) return;
+        setRestoringChunkId(chunkId);
+        try {
+            await restoreChunk(sessionId, chunkId);
+            await refreshReviewGate();
+        } catch (e) {
+            setUploadError(e instanceof Error ? e.message : 'Failed to restore chunk');
+        } finally {
+            setRestoringChunkId(null);
         }
     };
 
@@ -191,6 +222,11 @@ export default function IngestionPage() {
             setChunksLoading(false);
         }
     };
+
+    useEffect(() => {
+        if (!sessionId) return;
+        refreshReviewGate();
+    }, [sessionId]);
 
     return (
         <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-[1400px]">
@@ -504,6 +540,100 @@ export default function IngestionPage() {
                 </div>
             </motion.div>
 
+            {/* Signal Review Gate */}
+            <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, delay: 0.28 }}
+                className="glass-card rounded-xl p-5 space-y-4"
+            >
+                <div className="flex items-center justify-between">
+                    <div>
+                        <h2 className="text-sm font-semibold text-zinc-200">Signal Review Gate</h2>
+                        <p className="text-xs text-zinc-500 mt-0.5">Review classified chunks before BRD generation.</p>
+                    </div>
+                    <button
+                        onClick={() => refreshReviewGate()}
+                        disabled={!sessionId || reviewLoading}
+                        className="btn-secondary text-xs py-1.5 px-3 disabled:opacity-50"
+                    >
+                        {reviewLoading ? <Loader2 size={12} className="animate-spin inline mr-1" /> : null}
+                        Refresh
+                    </button>
+                </div>
+
+                {!sessionId ? (
+                    <p className="text-xs text-zinc-500">Create/select a session first to review signals.</p>
+                ) : (
+                    <>
+                        <div className="grid md:grid-cols-3 gap-3">
+                            <div className="rounded-lg border border-white/10 bg-white/4 p-3">
+                                <p className="text-[11px] text-zinc-500">Active signals</p>
+                                <p className="text-xl font-semibold text-emerald-300">{activeSignals.length}</p>
+                            </div>
+                            <div className="rounded-lg border border-white/10 bg-white/4 p-3">
+                                <p className="text-[11px] text-zinc-500">Suppressed signals</p>
+                                <p className="text-xl font-semibold text-amber-300">{suppressedSignals.length}</p>
+                            </div>
+                            <div className="rounded-lg border border-white/10 bg-white/4 p-3">
+                                <p className="text-[11px] text-zinc-500">Ready to generate</p>
+                                <p className="text-xl font-semibold text-cyan-300">{activeSignals.length > 0 ? 'Yes' : 'No'}</p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-2">
+                            <p className="text-xs uppercase tracking-wider text-zinc-500">Suppressed Chunks</p>
+                            {suppressedSignals.length === 0 ? (
+                                <p className="text-xs text-zinc-500">No suppressed chunks found for this session.</p>
+                            ) : (
+                                suppressedSignals.slice(0, 8).map((chunk) => (
+                                    <div key={chunk.chunk_id} className="rounded-lg border border-white/10 bg-zinc-950/40 p-3">
+                                        <div className="flex items-start gap-2">
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-xs text-zinc-300">
+                                                    {chunk.cleaned_text.slice(0, 220)}
+                                                    {chunk.cleaned_text.length > 220 ? '…' : ''}
+                                                </p>
+                                                <p className="text-[10px] text-zinc-600 font-mono mt-1 truncate">
+                                                    {chunk.source_ref}
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={() => restoreSuppressedChunk(chunk.chunk_id)}
+                                                disabled={restoringChunkId === chunk.chunk_id}
+                                                className="text-[11px] px-2 py-1 rounded-md border border-blue-500/30 text-blue-300 hover:bg-blue-500/10 disabled:opacity-50"
+                                            >
+                                                {restoringChunkId === chunk.chunk_id ? (
+                                                    <Loader2 size={11} className="animate-spin inline mr-1" />
+                                                ) : (
+                                                    <RotateCcw size={11} className="inline mr-1" />
+                                                )}
+                                                Restore
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+
+                        <div className="flex items-center gap-3 pt-2">
+                            <Link href="/signals">
+                                <button className="btn-secondary text-sm py-2">Open Full Signal Review</button>
+                            </Link>
+                            <Link href="/brd">
+                                <button
+                                    disabled={activeSignals.length === 0}
+                                    className="btn-primary text-sm py-2 px-4 disabled:opacity-50"
+                                >
+                                    Continue to BRD
+                                    <ArrowRight size={13} className="inline ml-2" />
+                                </button>
+                            </Link>
+                        </div>
+                    </>
+                )}
+            </motion.div>
+
             {/* S2-03: Raw Chunks Drawer */}
             <Drawer
                 open={drawerOpen}
@@ -533,7 +663,7 @@ export default function IngestionPage() {
                                     <span className="text-[10px] text-zinc-500">·</span>
                                     <span className="text-[10px] text-zinc-400">{chunk.speaker ?? 'Unknown'}</span>
                                     <span className="text-[10px] text-zinc-500">·</span>
-                                    <span className="glass-badge text-[9px]">{chunk.signal_label}</span>
+                                    <span className="glass-badge text-[9px]">{chunk.signal_label ?? chunk.label ?? 'unknown'}</span>
                                 </div>
                                 <p className="text-xs text-zinc-300 leading-relaxed">
                                     {expandedChunk === chunk.chunk_id

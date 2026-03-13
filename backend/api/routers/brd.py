@@ -1,7 +1,11 @@
 import os
 import sys
+import json
+import queue
+import threading
+import asyncio
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import markdown
@@ -178,6 +182,64 @@ def generate_brd(session_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/generate/stream")
+def stream_brd_generation(session_id: str):
+    """
+    Trigger BRD generation and stream real-time status updates using SSE.
+    """
+    event_queue: "queue.Queue[dict | None]" = queue.Queue()
+
+    def push_event(payload: dict) -> None:
+        event_queue.put(payload)
+
+    def _worker() -> None:
+        try:
+            push_event({"type": "generation_started", "session_id": session_id})
+            snapshot_id = run_brd_generation(session_id, on_progress=push_event)
+            push_event({"type": "validation_started", "session_id": session_id})
+            validate_brd(session_id)
+            push_event({"type": "validation_completed", "session_id": session_id})
+            push_event({
+                "type": "complete",
+                "session_id": session_id,
+                "snapshot_id": snapshot_id,
+                "message": "BRD generation and validation completed.",
+            })
+        except Exception as e:
+            push_event({
+                "type": "error",
+                "session_id": session_id,
+                "message": str(e),
+            })
+        finally:
+            event_queue.put(None)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    async def event_stream():
+        loop = asyncio.get_event_loop()
+        # Browser will retry if disconnected.
+        yield "retry: 3000\n\n"
+        while True:
+            item = await loop.run_in_executor(None, event_queue.get)
+            if item is None:
+                break
+            event_type = item.get("type", "message")
+            yield f"event: {event_type}\n"
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
 @router.get("/")
 def get_brd(session_id: str, format: str = "markdown"):
     """
@@ -200,17 +262,20 @@ def get_brd(session_id: str, format: str = "markdown"):
 
     conn, db_type = get_connection()
     flags = []
+    section_meta: Dict[str, Any] = {}
+    latest_snapshot_id = None
     try:
         cur = conn.cursor()
-        query = """
-            SELECT section_name, flag_type, severity, description 
-            FROM brd_validation_flags 
+        flag_query = """
+            SELECT section_name, flag_type, severity, description
+            FROM brd_validation_flags
             WHERE session_id = %s
-            ORDER BY severity DESC
+            ORDER BY created_at DESC
         """
-        if db_type == "sqlite": query = query.replace("%s", "?")
-        
-        cur.execute(query, (session_id,))
+        if db_type == "sqlite":
+            flag_query = flag_query.replace("%s", "?")
+
+        cur.execute(flag_query, (session_id,))
         for r in cur.fetchall():
             flags.append({
                 "section_name": r[0],
@@ -218,6 +283,36 @@ def get_brd(session_id: str, format: str = "markdown"):
                 "severity": r[2],
                 "description": r[3]
             })
+
+        section_query = """
+            SELECT section_name, snapshot_id, version_number, human_edited, generated_at, source_chunk_ids
+            FROM brd_sections
+            WHERE session_id = %s
+            ORDER BY section_name ASC, version_number DESC
+        """
+        if db_type == "sqlite":
+            section_query = section_query.replace("%s", "?")
+
+        cur.execute(section_query, (session_id,))
+        for r in cur.fetchall():
+            section_name = r[0]
+            if section_name in section_meta:
+                continue
+            source_ids_raw = r[5]
+            try:
+                source_ids = json.loads(source_ids_raw) if isinstance(source_ids_raw, str) else (source_ids_raw or [])
+            except Exception:
+                source_ids = []
+
+            section_meta[section_name] = {
+                "snapshot_id": r[1],
+                "version_number": r[2],
+                "human_edited": bool(r[3]),
+                "generated_at": str(r[4]) if r[4] is not None else None,
+                "source_chunk_ids": source_ids,
+            }
+            if latest_snapshot_id is None and r[1]:
+                latest_snapshot_id = r[1]
     except Exception:
         pass
     finally:
@@ -225,8 +320,10 @@ def get_brd(session_id: str, format: str = "markdown"):
 
     return {
         "session_id": session_id,
+        "snapshot_id": latest_snapshot_id,
         "format": format.lower(),
         "sections": sections,
+        "section_meta": section_meta,
         "flags": flags
     }
 

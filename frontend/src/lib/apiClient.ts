@@ -1,43 +1,55 @@
-/**
- * apiClient.ts
- * Typed async functions wrapping every FastAPI backend endpoint.
- * All calls go through the apiFetch() helper which throws on non-2xx
- * responses so errors surface as exceptions rather than silent failures.
- */
-
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-// ─── Core Fetch Wrapper ────────────────────────────────────────────────────────
+function joinUrl(base: string, path: string): string {
+    return `${base.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
+}
 
-async function apiFetch<T = unknown>(url: string, options?: RequestInit): Promise<T> {
-    const res = await fetch(`${BASE}${url}`, options);
+async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promise<T> {
+    const res = await fetch(joinUrl(BASE, path), options);
     if (!res.ok) {
         const errorText = await res.text().catch(() => "Unknown error");
         throw new Error(`API error ${res.status}: ${errorText}`);
     }
-    return res.json() as Promise<T>;
-}
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+    if (res.status === 204) {
+        return undefined as T;
+    }
+
+    const contentType = res.headers.get("content-type")?.toLowerCase() ?? "";
+    if (contentType.includes("application/json")) {
+        return res.json() as Promise<T>;
+    }
+    return (await res.text()) as T;
+}
 
 export interface Session {
     session_id: string;
     status: string;
+    message?: string;
 }
 
 export interface Chunk {
     chunk_id: string;
     session_id: string;
     cleaned_text: string;
-    signal_label: string;
+    signal_label?: string;
+    label?: string;
     confidence: number;
     source_type: string;
     source_ref: string;
     speaker: string;
     reasoning?: string;
-    classification_path: string;
+    classification_path?: string;
     suppressed: boolean;
+    manually_restored?: boolean;
     flagged_for_review?: boolean;
+}
+
+export interface RawDataChunk {
+    source_type: string;
+    source_ref: string;
+    speaker?: string;
+    text: string;
 }
 
 export interface BRDSections {
@@ -51,6 +63,14 @@ export interface BRDSections {
     [key: string]: string | undefined;
 }
 
+export interface BRDSectionMeta {
+    snapshot_id: string | null;
+    version_number: number;
+    human_edited: boolean;
+    generated_at: string | null;
+    source_chunk_ids: string[];
+}
+
 export interface ValidationFlag {
     section_name: string;
     flag_type: string;
@@ -60,11 +80,54 @@ export interface ValidationFlag {
 
 export interface BRDResponse {
     session_id: string;
+    snapshot_id: string | null;
     sections: BRDSections;
+    section_meta: Record<string, BRDSectionMeta>;
     flags: ValidationFlag[];
 }
 
-// ─── Sessions ─────────────────────────────────────────────────────────────────
+export type BRDStreamEventType =
+    | "generation_started"
+    | "snapshot_created"
+    | "agents_launched"
+    | "agent_started"
+    | "agent_completed"
+    | "agent_failed"
+    | "validation_started"
+    | "validation_completed"
+    | "complete"
+    | "error";
+
+export interface BRDStreamEventPayload {
+    type?: BRDStreamEventType | string;
+    session_id?: string;
+    snapshot_id?: string;
+    agent?: string;
+    message?: string;
+    error?: string;
+    count?: number;
+}
+
+export interface SlackChannel {
+    id: string;
+    name: string;
+    is_member: boolean;
+}
+
+export interface SlackStatus {
+    connected: boolean;
+    team_id: string | null;
+    team_name: string | null;
+    scopes: string[];
+}
+
+export interface SlackIngestResponse {
+    message: string;
+    session_id: string;
+    selected_channels: string[];
+    channel_message_counts: Record<string, number>;
+    chunk_count: number;
+}
 
 export async function createSession(): Promise<Session> {
     return apiFetch<Session>("/sessions/", { method: "POST" });
@@ -72,15 +135,6 @@ export async function createSession(): Promise<Session> {
 
 export async function getSession(sessionId: string): Promise<Session> {
     return apiFetch<Session>(`/sessions/${sessionId}`);
-}
-
-// ─── Ingestion ────────────────────────────────────────────────────────────────
-
-export interface RawDataChunk {
-    source_type: string;
-    source_ref: string;
-    speaker?: string;
-    text: string;
 }
 
 export async function ingestChunks(sessionId: string, chunks: RawDataChunk[]): Promise<{ message: string }> {
@@ -91,10 +145,6 @@ export async function ingestChunks(sessionId: string, chunks: RawDataChunk[]): P
     });
 }
 
-/**
- * Upload a CSV or TXT file for ingestion.
- * Runs synchronously — resolves when classification is done.
- */
 export async function uploadFile(
     sessionId: string,
     file: File,
@@ -103,27 +153,101 @@ export async function uploadFile(
     const form = new FormData();
     form.append("file", file);
     form.append("source_type", sourceType);
-    // Do NOT set Content-Type — fetch sets it automatically for FormData (with boundary)
     return apiFetch(`/sessions/${sessionId}/ingest/upload`, {
         method: "POST",
         body: form,
     });
 }
 
-/**
- * Ingest a sample of the pre-downloaded Enron emails.csv directly from disk
- * on the server. Avoids uploading the ~1.3 GB file through the browser.
- */
 export async function ingestDemoDataset(
     sessionId: string,
-    limit: number = 80
-): Promise<{ message: string; chunk_count: number; filename: string }> {
-    return apiFetch(`/sessions/${sessionId}/ingest/demo?limit=${limit}`, {
+    limit: number = 80,
+    onLog?: (line: string) => void
+): Promise<{ message: string; chunk_count: number; logs: string[] }> {
+    const res = await fetch(joinUrl(BASE, `/sessions/${sessionId}/ingest/demo?limit=${limit}`), {
         method: "POST",
+        headers: { Accept: "text/plain" },
     });
+
+    if (!res.ok) {
+        const errorText = await res.text().catch(() => "Demo ingest failed");
+        throw new Error(`API error ${res.status}: ${errorText}`);
+    }
+
+    if (!res.body) {
+        const text = await res.text();
+        const fallbackLogs = text
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+        fallbackLogs.forEach((line) => onLog?.(line));
+        const count = extractChunkCount(text);
+        return {
+            message: count > 0
+                ? `Demo dataset loaded - ${count} chunks classified and stored.`
+                : "Demo dataset ingestion completed.",
+            chunk_count: count,
+            logs: fallbackLogs,
+        };
+    }
+
+    const decoder = new TextDecoder();
+    const reader = res.body.getReader();
+    const logs: string[] = [];
+    let buffer = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+            break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split(/\r?\n/);
+        buffer = lines.pop() ?? "";
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) {
+                continue;
+            }
+            logs.push(line);
+            onLog?.(line);
+        }
+    }
+
+    const tail = buffer.trim();
+    if (tail) {
+        logs.push(tail);
+        onLog?.(tail);
+    }
+
+    const fullText = logs.join("\n");
+    const count = extractChunkCount(fullText);
+    return {
+        message: count > 0
+            ? `Demo dataset loaded - ${count} chunks classified and stored.`
+            : "Demo dataset ingestion completed.",
+        chunk_count: count,
+        logs,
+    };
 }
 
-// ─── Signal Review ────────────────────────────────────────────────────────────
+function extractChunkCount(logText: string): number {
+    const patterns = [
+        /(\d+)\s+chunks\s+stored/i,
+        /Complete!\s+(\d+)\s+chunks/i,
+    ];
+    for (const re of patterns) {
+        const match = logText.match(re);
+        if (!match) {
+            continue;
+        }
+        const value = Number.parseInt(match[1], 10);
+        if (!Number.isNaN(value)) {
+            return value;
+        }
+    }
+    return 0;
+}
 
 export async function getChunks(
     sessionId: string,
@@ -139,22 +263,70 @@ export async function restoreChunk(
     return apiFetch(`/sessions/${sessionId}/chunks/${chunkId}/restore`, { method: "POST" });
 }
 
-// ─── BRD Generation ───────────────────────────────────────────────────────────
-
-/**
- * Trigger BRD generation.
- * NOTE: This endpoint is SYNCHRONOUS — it only resolves when all 7 agents 
- * have finished writing to the database (30-90 seconds). Show a loading 
- * spinner + message while awaiting this call.
- */
 export async function generateBRD(
     sessionId: string
 ): Promise<{ message: string; snapshot_id: string }> {
     return apiFetch(`/sessions/${sessionId}/brd/generate`, { method: "POST" });
 }
 
-export async function getBRD(sessionId: string): Promise<BRDResponse> {
-    return apiFetch(`/sessions/${sessionId}/brd/`);
+export function streamBRDGeneration(
+    sessionId: string,
+    handlers: {
+        onEvent?: (payload: BRDStreamEventPayload) => void;
+        onError?: (message: string) => void;
+        onDone?: (payload: BRDStreamEventPayload) => void;
+    }
+): () => void {
+    const streamUrl = `${BASE.replace(/\/$/, "")}/sessions/${sessionId}/brd/generate/stream`;
+    const source = new EventSource(streamUrl);
+
+    const handleRaw = (event: MessageEvent) => {
+        try {
+            const payload = JSON.parse(event.data) as BRDStreamEventPayload;
+            handlers.onEvent?.(payload);
+            if (payload.type === "complete") {
+                handlers.onDone?.(payload);
+                source.close();
+            }
+            if (payload.type === "error") {
+                handlers.onError?.(payload.message ?? payload.error ?? "Generation failed");
+                source.close();
+            }
+        } catch {
+            handlers.onEvent?.({ type: "message", message: event.data });
+        }
+    };
+
+    const eventTypes: BRDStreamEventType[] = [
+        "generation_started",
+        "snapshot_created",
+        "agents_launched",
+        "agent_started",
+        "agent_completed",
+        "agent_failed",
+        "validation_started",
+        "validation_completed",
+        "complete",
+        "error",
+    ];
+
+    eventTypes.forEach((eventType) => {
+        source.addEventListener(eventType, handleRaw as EventListener);
+    });
+
+    source.onerror = () => {
+        handlers.onError?.("Lost connection to generation stream.");
+        source.close();
+    };
+
+    return () => source.close();
+}
+
+export async function getBRD(
+    sessionId: string,
+    format: "markdown" | "html" = "markdown"
+): Promise<BRDResponse> {
+    return apiFetch(`/sessions/${sessionId}/brd/?format=${format}`);
 }
 
 export async function editBRDSection(
@@ -170,17 +342,46 @@ export async function editBRDSection(
     });
 }
 
-// ─── Export ───────────────────────────────────────────────────────────────────
+export async function getSlackOAuthUrl(): Promise<string> {
+    const data = await apiFetch<{ auth_url: string }>("/integrations/slack/auth/start");
+    return data.auth_url;
+}
 
-/**
- * Download the BRD as a file.
- * Triggers a browser file download — does not return content as a string.
- */
+export async function getSlackStatus(): Promise<SlackStatus> {
+    return apiFetch<SlackStatus>("/integrations/slack/status");
+}
+
+export async function disconnectSlack(): Promise<{ message: string }> {
+    return apiFetch<{ message: string }>("/integrations/slack/disconnect", { method: "POST" });
+}
+
+export async function listSlackChannels(): Promise<{ count: number; channels: SlackChannel[] }> {
+    return apiFetch<{ count: number; channels: SlackChannel[] }>("/integrations/slack/channels");
+}
+
+export async function ingestSlackChannels(
+    sessionId: string,
+    channelIds: string[],
+    limitPerChannel: number = 200
+): Promise<SlackIngestResponse> {
+    return apiFetch<SlackIngestResponse>("/integrations/slack/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            session_id: sessionId,
+            channel_ids: channelIds,
+            limit_per_channel: limitPerChannel,
+        }),
+    });
+}
+
+export type ExportFormat = "markdown" | "html" | "docx";
+
 export async function exportBRD(
     sessionId: string,
-    format: "markdown" | "docx" = "markdown"
+    format: ExportFormat = "markdown"
 ): Promise<void> {
-    const res = await fetch(`${BASE}/sessions/${sessionId}/brd/export?format=${format}`);
+    const res = await fetch(joinUrl(BASE, `/sessions/${sessionId}/brd/export?format=${format}`));
     if (!res.ok) {
         const errorText = await res.text().catch(() => "Export failed");
         throw new Error(`Export error ${res.status}: ${errorText}`);
@@ -190,7 +391,12 @@ export async function exportBRD(
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `brd_${sessionId}.${format === "docx" ? "docx" : "md"}`;
+
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const filenameMatch = disposition.match(/filename="?([^"]+)"?/i);
+    const fallbackExt = format === "docx" ? "docx" : format === "html" ? "html" : "md";
+    a.download = filenameMatch?.[1] ?? `brd_${sessionId}.${fallbackExt}`;
+
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

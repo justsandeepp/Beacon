@@ -2,8 +2,19 @@
 
 import { useAuthStore } from '@/store/useAuthStore';
 import { useIntegrationStore } from '@/store/useIntegrationStore';
+import { useSessionStore } from '@/store/useSessionStore';
+import {
+    disconnectSlack,
+    getSlackOAuthUrl,
+    getSlackStatus,
+    ingestSlackChannels,
+    listSlackChannels,
+    type SlackChannel,
+    type SlackStatus,
+} from '@/lib/apiClient';
 import { User, Mail, MessageSquare, Video, Users as UsersIcon, FileText, Calendar, CheckCircle2, XCircle, Settings as SettingsIcon } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 const dataSources = [
     {
@@ -57,13 +68,128 @@ const dataSources = [
 ];
 
 export default function ProfilePage() {
+    const searchParams = useSearchParams();
     const { user, updateUser } = useAuthStore();
     const { integrations, toggleConnection, updateIntegration } = useIntegrationStore();
+    const { activeSessionId } = useSessionStore();
     const [editingProfile, setEditingProfile] = useState(false);
+    const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null);
+    const [slackChannels, setSlackChannels] = useState<SlackChannel[]>([]);
+    const [selectedSlackChannels, setSelectedSlackChannels] = useState<string[]>([]);
+    const [slackLoading, setSlackLoading] = useState(false);
+    const [slackIngesting, setSlackIngesting] = useState(false);
+    const [slackError, setSlackError] = useState<string | null>(null);
+    const [slackMessage, setSlackMessage] = useState<string | null>(null);
 
     const getIntegrationStatus = (sourceId: string) => {
         const integration = integrations.find(i => i.type === sourceId);
         return integration?.connected || false;
+    };
+
+    const syncSlackStatus = async () => {
+        setSlackLoading(true);
+        setSlackError(null);
+        try {
+            const status = await getSlackStatus();
+            setSlackStatus(status);
+            if (status.connected) {
+                const channelRes = await listSlackChannels();
+                setSlackChannels(channelRes.channels);
+                const persisted = integrations.find((i) => i.type === 'slack')?.config?.channels ?? [];
+                setSelectedSlackChannels(
+                    persisted.filter((id) => channelRes.channels.some((c) => c.id === id))
+                );
+            } else {
+                setSlackChannels([]);
+                setSelectedSlackChannels([]);
+            }
+
+            const slackIntegration = integrations.find((i) => i.type === 'slack');
+            if (slackIntegration) {
+                updateIntegration(slackIntegration.id, {
+                    connected: status.connected,
+                    name: status.team_name ? `${status.team_name} Workspace` : 'Slack Workspace',
+                    config: {
+                        ...(slackIntegration.config ?? {}),
+                        workspace: status.team_name ?? '',
+                        channels: selectedSlackChannels,
+                    },
+                });
+            }
+        } catch (e) {
+            setSlackError(e instanceof Error ? e.message : 'Failed to load Slack status');
+        } finally {
+            setSlackLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        syncSlackStatus();
+    }, []);
+
+    useEffect(() => {
+        const slackParam = searchParams.get('slack');
+        if (!slackParam) return;
+        if (slackParam === 'connected') {
+            setSlackMessage('Slack workspace connected successfully.');
+            syncSlackStatus();
+        } else if (slackParam === 'error') {
+            setSlackError('Slack OAuth failed. Please try again.');
+        }
+    }, [searchParams]);
+
+    useEffect(() => {
+        const slackIntegration = integrations.find((i) => i.type === 'slack');
+        if (!slackIntegration) return;
+        updateIntegration(slackIntegration.id, {
+            config: {
+                ...(slackIntegration.config ?? {}),
+                channels: selectedSlackChannels,
+            },
+        });
+    }, [selectedSlackChannels]);
+
+    const connectSlack = async () => {
+        setSlackError(null);
+        try {
+            const authUrl = await getSlackOAuthUrl();
+            window.location.href = authUrl;
+        } catch (e) {
+            setSlackError(e instanceof Error ? e.message : 'Failed to start Slack OAuth');
+        }
+    };
+
+    const disconnectSlackWorkspace = async () => {
+        setSlackError(null);
+        try {
+            await disconnectSlack();
+            setSlackMessage('Slack disconnected.');
+            await syncSlackStatus();
+        } catch (e) {
+            setSlackError(e instanceof Error ? e.message : 'Failed to disconnect Slack');
+        }
+    };
+
+    const ingestSelectedSlackChannels = async () => {
+        if (!activeSessionId) {
+            setSlackError('Select an active BRD session before ingesting Slack channels.');
+            return;
+        }
+        if (selectedSlackChannels.length === 0) {
+            setSlackError('Select at least one Slack channel to ingest.');
+            return;
+        }
+        setSlackIngesting(true);
+        setSlackError(null);
+        try {
+            const result = await ingestSlackChannels(activeSessionId, selectedSlackChannels);
+            setSlackMessage(result.message);
+            await syncSlackStatus();
+        } catch (e) {
+            setSlackError(e instanceof Error ? e.message : 'Slack ingestion failed');
+        } finally {
+            setSlackIngesting(false);
+        }
     };
 
     return (
@@ -149,6 +275,15 @@ export default function ProfilePage() {
                 </div>
             )}
 
+            {(slackError || slackMessage) && (
+                <div className={`rounded-xl border px-4 py-3 text-sm ${slackError
+                    ? 'border-red-500/20 bg-red-500/10 text-red-300'
+                    : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+                    }`}>
+                    {slackError ?? slackMessage}
+                </div>
+            )}
+
             {/* Data Ingestion Sources */}
             <div>
                 <div className="mb-6">
@@ -160,9 +295,12 @@ export default function ProfilePage() {
 
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {dataSources.map((source) => {
+                        const isSlack = source.id === 'slack';
                         const Icon = source.icon;
                         const integration = integrations.find(i => i.type === source.id);
-                        const isConnected = integration?.connected || false;
+                        const isConnected = isSlack
+                            ? Boolean(slackStatus?.connected)
+                            : integration?.connected || false;
 
                         return (
                             <div
@@ -194,30 +332,90 @@ export default function ProfilePage() {
                                 {/* Configuration Fields */}
                                 {isConnected && (
                                     <div className="mb-4 space-y-2">
-                                        {source.fields.map((field) => (
-                                            <div key={field} className="flex items-center justify-between text-xs">
-                                                <span className="text-zinc-500">{field}</span>
-                                                <span className="text-cyan-400">✓ Set</span>
-                                            </div>
-                                        ))}
+                                        {isSlack ? (
+                                            <>
+                                                <div className="flex items-center justify-between text-xs">
+                                                    <span className="text-zinc-500">Workspace</span>
+                                                    <span className="text-cyan-400">{slackStatus?.team_name ?? 'Connected'}</span>
+                                                </div>
+                                                <div className="space-y-1.5 pt-2">
+                                                    <p className="text-[10px] uppercase tracking-wider text-zinc-500">Read-only channels</p>
+                                                    <div className="max-h-28 overflow-y-auto pr-1 space-y-1">
+                                                        {slackChannels.length === 0 ? (
+                                                            <p className="text-[11px] text-zinc-500">
+                                                                {slackLoading ? 'Loading channels...' : 'No channels found'}
+                                                            </p>
+                                                        ) : (
+                                                            slackChannels.slice(0, 12).map((channel) => (
+                                                                <label key={channel.id} className="flex items-center gap-2 text-xs text-zinc-300">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={selectedSlackChannels.includes(channel.id)}
+                                                                        onChange={() => {
+                                                                            setSelectedSlackChannels((prev) =>
+                                                                                prev.includes(channel.id)
+                                                                                    ? prev.filter((id) => id !== channel.id)
+                                                                                    : [...prev, channel.id]
+                                                                            );
+                                                                        }}
+                                                                        className="w-3.5 h-3.5 accent-cyan-400"
+                                                                    />
+                                                                    <span className="truncate">#{channel.name}</span>
+                                                                </label>
+                                                            ))
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </>
+                                        ) : (
+                                            source.fields.map((field) => (
+                                                <div key={field} className="flex items-center justify-between text-xs">
+                                                    <span className="text-zinc-500">{field}</span>
+                                                    <span className="text-cyan-400">✓ Set</span>
+                                                </div>
+                                            ))
+                                        )}
                                     </div>
                                 )}
 
                                 {/* Action Button */}
-                                <button
-                                    onClick={() => {
-                                        const integrationId = integrations.find(i => i.type === source.id)?.id;
-                                        if (integrationId) {
-                                            toggleConnection(integrationId);
-                                        }
-                                    }}
-                                    className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${isConnected
-                                        ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20'
-                                        : 'bg-cyan-500 hover:bg-cyan-600 text-white'
-                                        }`}
-                                >
-                                    {isConnected ? 'Disconnect' : 'Connect Now'}
-                                </button>
+                                {isSlack ? (
+                                    <div className="space-y-2">
+                                        <button
+                                            onClick={isConnected ? disconnectSlackWorkspace : connectSlack}
+                                            className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${isConnected
+                                                ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20'
+                                                : 'bg-cyan-500 hover:bg-cyan-600 text-white'
+                                                }`}
+                                        >
+                                            {isConnected ? 'Disconnect Slack' : 'Connect Slack'}
+                                        </button>
+                                        {isConnected && (
+                                            <button
+                                                onClick={ingestSelectedSlackChannels}
+                                                disabled={slackIngesting || selectedSlackChannels.length === 0}
+                                                className="w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/20 disabled:opacity-50"
+                                            >
+                                                {slackIngesting ? 'Ingesting…' : 'Ingest Selected Channels'}
+                                            </button>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <button
+                                        onClick={() => {
+                                            const integrationId = integrations.find(i => i.type === source.id)?.id;
+                                            if (integrationId) {
+                                                toggleConnection(integrationId);
+                                            }
+                                        }}
+                                        className={`w-full px-4 py-2.5 rounded-lg font-medium text-sm transition-colors ${isConnected
+                                            ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20'
+                                            : 'bg-cyan-500 hover:bg-cyan-600 text-white'
+                                            }`}
+                                    >
+                                        {isConnected ? 'Disconnect' : 'Connect Now'}
+                                    </button>
+                                )}
                             </div>
                         );
                     })}

@@ -4,7 +4,14 @@
  * Wired to the real FastAPI backend via apiClient.ts.
  */
 import { create } from 'zustand';
-import { generateBRD, getBRD, editBRDSection, type BRDSections, type ValidationFlag } from '@/lib/apiClient';
+import {
+    generateBRD,
+    getBRD,
+    editBRDSection,
+    type BRDSections,
+    type BRDSectionMeta,
+    type ValidationFlag,
+} from '@/lib/apiClient';
 
 export interface BRDSection {
     id: string;
@@ -13,6 +20,10 @@ export interface BRDSection {
     citations: string[];
     lastEdited?: Date;
     humanEdited?: boolean;
+    version?: number;
+    snapshotId?: string | null;
+    sourceChunkIds?: string[];
+    generatedAt?: string | null;
 }
 
 interface BRDStore {
@@ -37,12 +48,17 @@ const SECTION_META: { id: keyof BRDSections; title: string }[] = [
     { id: 'success_metrics', title: 'Success Metrics' },
 ];
 
-function sectionsFromAPI(raw: BRDSections): BRDSection[] {
+function sectionsFromAPI(raw: BRDSections, meta: Record<string, BRDSectionMeta>): BRDSection[] {
     return SECTION_META.map(({ id, title }) => ({
         id: id as string,
         title,
         content: raw[id] ?? '',
         citations: [],
+        humanEdited: meta[id]?.human_edited ?? false,
+        version: meta[id]?.version_number ?? 1,
+        snapshotId: meta[id]?.snapshot_id ?? null,
+        sourceChunkIds: meta[id]?.source_chunk_ids ?? [],
+        generatedAt: meta[id]?.generated_at ?? null,
     }));
 }
 
@@ -80,8 +96,9 @@ export const useBRDStore = create<BRDStore>((set, get) => ({
         try {
             const data = await getBRD(sessionId);
             set({
-                sections: sectionsFromAPI(data.sections),
+                sections: sectionsFromAPI(data.sections, data.section_meta ?? {}),
                 flags: data.flags,
+                snapshotId: data.snapshot_id ?? get().snapshotId,
             });
         } catch (e) {
             set({ error: e instanceof Error ? e.message : 'Failed to load BRD' });
