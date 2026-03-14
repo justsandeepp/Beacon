@@ -146,6 +146,7 @@ export interface GmailEmail {
     subject: string;
     from: string;
     body: string;
+    snippet: string;
     message_id: string;
     attachments: any[];
 }
@@ -409,8 +410,26 @@ export async function disconnectGmail(): Promise<{ message: string }> {
     return apiFetch<{ message: string }>("/integrations/gmail/disconnect", { method: "POST" });
 }
 
-export async function listGmailEmails(count: number = 10): Promise<{ count: number; emails: GmailEmail[] }> {
-    return apiFetch<{ count: number; emails: GmailEmail[] }>(`/integrations/gmail/check?count=${count}`);
+export interface GmailSearchOptions {
+    count?: number;
+    q?: string;
+    from?: string;
+    to?: string;
+    content?: string;
+    hasAttachments?: boolean;
+}
+
+export async function listGmailEmails(options: GmailSearchOptions = {}): Promise<{ count: number; emails: GmailEmail[]; query_used?: string }> {
+    const params = new URLSearchParams();
+    if (options.count) params.append("count", options.count.toString());
+    if (options.q) params.append("q", options.q);
+    if (options.from) params.append("from_mail", options.from);
+    if (options.to) params.append("to_mail", options.to);
+    if (options.content) params.append("content_search", options.content);
+    if (options.hasAttachments) params.append("has_attachments", "true");
+
+    const query = params.toString();
+    return apiFetch<{ count: number; emails: GmailEmail[]; query_used?: string }>(`/integrations/gmail/check${query ? `?${query}` : ""}`);
 }
 
 export async function ingestGmailEmails(

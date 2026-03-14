@@ -140,16 +140,37 @@ def gmail_disconnect():
     return {"message": "Gmail disconnected."}
 
 @router.get("/check")
-def gmail_check(count: int = Query(default=10, ge=1, le=50)):
+def gmail_check(
+    count: int = Query(default=10, ge=1, le=50),
+    q: str = Query(default=None),
+    from_mail: str = Query(default=None),
+    to_mail: str = Query(default=None),
+    content_search: str = Query(default=None),
+    has_attachments: bool = Query(default=None)
+):
     creds_data = user_credentials.get("main_user")
     if not creds_data:
         raise HTTPException(status_code=401, detail="User not authenticated.")
     
     credentials = Credentials(**creds_data)
     
+    # Build search query
+    parts = []
+    if q: parts.append(q)
+    if from_mail: parts.append(f"from:{from_mail}")
+    if to_mail: parts.append(f"to:{to_mail}")
+    if content_search: parts.append(content_search)
+    if has_attachments: parts.append("has:attachment")
+    
+    query_string = " ".join(parts) if parts else None
+    
     try:
         service = gmail.get_gmail_service(credentials)
-        results = service.users().messages().list(userId="me", maxResults=count).execute()
+        list_kwargs = {"userId": "me", "maxResults": count}
+        if query_string:
+            list_kwargs["q"] = query_string
+            
+        results = service.users().messages().list(**list_kwargs).execute()
         messages = results.get("messages", [])
         
         if not messages:
@@ -162,7 +183,8 @@ def gmail_check(count: int = Query(default=10, ge=1, le=50)):
             
         return {
             "count": len(emails),
-            "emails": emails
+            "emails": emails,
+            "query_used": query_string
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

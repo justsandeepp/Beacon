@@ -34,6 +34,7 @@ import {
 } from '@/lib/apiClient';
 import { useSessionStore } from '@/store/useSessionStore';
 import { useAuth } from '@/contexts/AuthContext';
+import GmailReplica from '@/components/features/GmailReplica';
 
 // ─── Static Connector Data ────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ export default function IngestionPage() {
     const [activeSignals, setActiveSignals] = useState<Chunk[]>([]);
     const [suppressedSignals, setSuppressedSignals] = useState<Chunk[]>([]);
     const [restoringChunkId, setRestoringChunkId] = useState<string | null>(null);
+    const [gmailReplicaOpen, setGmailReplicaOpen] = useState(false);
 
     const ensureSessionId = async (): Promise<string> => {
         if (sessionId) return sessionId;
@@ -150,7 +152,7 @@ export default function IngestionPage() {
             const status = await getGmailStatus();
             setGmailStatus(status);
             if (status.connected) {
-                const res = await listGmailEmails(10);
+                const res = await listGmailEmails({ count: 10 });
                 setGmailEmails(res.emails);
             } else {
                 setGmailEmails([]);
@@ -173,7 +175,7 @@ export default function IngestionPage() {
         }
     };
 
-    const syncSelectedGmailEmails = async () => {
+    const syncSelectedGmailEmails = async (overrideIds?: string[]) => {
         const sid = await ensureSessionId();
         if (!sid) {
             setUploadError('No active session. Create/select one first.');
@@ -183,7 +185,9 @@ export default function IngestionPage() {
             setUploadError('Connect Gmail first.');
             return;
         }
-        if (selectedGmailEmails.length === 0) {
+        
+        const idsToIngest = overrideIds ?? selectedGmailEmails;
+        if (idsToIngest.length === 0) {
             setUploadError('Select at least one email.');
             return;
         }
@@ -191,7 +195,7 @@ export default function IngestionPage() {
         setGmailSyncing(true);
         setUploadError(null);
         try {
-            const result = await ingestGmailEmails(sid, selectedGmailEmails);
+            const result = await ingestGmailEmails(sid, idsToIngest);
             setGmailMessage(result.message);
             await refreshReviewGate(sid);
         } catch (e) {
@@ -407,6 +411,7 @@ export default function IngestionPage() {
     }, [sessionId]);
 
     return (
+        <>
         <div className="p-4 sm:p-6 space-y-4 sm:space-y-6 max-w-[1400px]">
             {/* Header */}
             <div>
@@ -640,19 +645,26 @@ export default function IngestionPage() {
 
                     {!gmailStatus?.connected ? (
                         <button
-                            onClick={startGmailConnect}
+                            onClick={() => setGmailReplicaOpen(true)}
                             disabled={gmailLoading || !gmailStatus?.available}
                             className="btn-primary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                         >
                             <Mail size={13} />
-                            Connect Gmail
+                            Open Gmail Replica
                         </button>
                     ) : (
                         <div className="space-y-2">
                             <button
-                                onClick={syncSelectedGmailEmails}
+                                onClick={() => setGmailReplicaOpen(true)}
+                                className="btn-primary w-full text-sm flex items-center justify-center gap-2 bg-red-500 hover:bg-red-600"
+                            >
+                                <Mail size={13} />
+                                Open Gmail Replica
+                            </button>
+                            <button
+                                onClick={() => syncSelectedGmailEmails()}
                                 disabled={gmailSyncing || selectedGmailEmails.length === 0}
-                                className="btn-primary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50 bg-red-500 hover:bg-red-600"
+                                className="btn-secondary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                             >
                                 {gmailSyncing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
                                 {gmailSyncing ? 'Ingesting...' : 'Ingest Selected'}
@@ -1023,5 +1035,21 @@ export default function IngestionPage() {
                 )}
             </Drawer>
         </div>
+        
+        {/* Gmail Replica Window */}
+        <AnimatePresence>
+            {gmailReplicaOpen && (
+                <GmailReplica 
+                    onClose={() => setGmailReplicaOpen(false)}
+                    onIngest={async (ids) => {
+                        setSelectedGmailEmails(ids);
+                        setGmailReplicaOpen(false);
+                        await syncSelectedGmailEmails(ids);
+                    }}
+                    isIngesting={gmailSyncing}
+                />
+            )}
+        </AnimatePresence>
+        </>
     );
 }

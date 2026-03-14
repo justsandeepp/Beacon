@@ -181,7 +181,7 @@ export default function ProfilePage() {
             setGmailStatus(status);
 
             if (status.connected) {
-                const emailsRes = await listGmailEmails(20);
+                const emailsRes = await listGmailEmails({ count: 20 });
                 setGmailEmails(emailsRes.emails);
 
                 const gmailIntegration = integrations.find((i) => i.type === "gmail");
