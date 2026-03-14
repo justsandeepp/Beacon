@@ -34,7 +34,7 @@ import {
 } from '@/lib/apiClient';
 import { useSessionStore } from '@/store/useSessionStore';
 import { useAuth } from '@/contexts/AuthContext';
-import GmailReplica from '@/components/features/GmailReplica';
+import GmailReplica from '@/components/features/GmailWindow';
 
 // ─── Static Connector Data ────────────────────────────────────────────────────
 
@@ -650,16 +650,16 @@ export default function IngestionPage() {
                             className="btn-primary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                         >
                             <Mail size={13} />
-                            Open Gmail Replica
+                            Advanced
                         </button>
                     ) : (
                         <div className="space-y-2">
                             <button
                                 onClick={() => setGmailReplicaOpen(true)}
-                                className="btn-primary w-full text-sm flex items-center justify-center gap-2 bg-red-500 hover:bg-red-600"
+                                className="btn-primary w-full text-sm flex items-center justify-center gap-2"
                             >
                                 <Mail size={13} />
-                                Open Gmail Replica
+                                Advanced
                             </button>
                             <button
                                 onClick={() => syncSelectedGmailEmails()}

@@ -151,6 +151,35 @@ export interface GmailEmail {
     attachments: any[];
 }
 
+export interface GmailProfile {
+    name: string;
+    email: string;
+    picture: string;
+}
+
+export interface GmailLabel {
+    id: string;
+    name: string;
+    type: string;
+    labelListVisibility?: string;
+    messageListVisibility?: string;
+}
+
+export interface GmailThread {
+    id: string;
+    snippet: string;
+    messages: GmailMessage[];
+}
+
+export interface GmailMessage {
+    id: string;
+    threadId: string;
+    labelIds: string[];
+    snippet: string;
+    payload: any;
+    sizeEstimate: number;
+}
+
 export async function createSession(): Promise<Session> {
     return apiFetch<Session>("/sessions/", { method: "POST" });
 }
@@ -402,6 +431,22 @@ export async function getGmailStatus(): Promise<GmailStatus> {
     return apiFetch<GmailStatus>("/integrations/gmail/status");
 }
 
+export async function getGmailProfile(): Promise<GmailProfile> {
+    return apiFetch<GmailProfile>("/integrations/gmail/profile");
+}
+
+export async function getGmailLabels(): Promise<{ labels: GmailLabel[] }> {
+    return apiFetch<{ labels: GmailLabel[] }>("/integrations/gmail/labels");
+}
+
+export async function getGmailThreadFull(threadId: string): Promise<GmailThread> {
+    return apiFetch<GmailThread>(`/integrations/gmail/threads/${threadId}`);
+}
+
+export async function getGmailAttachment(messageId: string, attachmentId: string): Promise<{ data: string }> {
+    return apiFetch<{ data: string }>(`/integrations/gmail/messages/${messageId}/attachments/${attachmentId}`);
+}
+
 export async function getGmailOAuthUrl(): Promise<string> {
     return joinUrl(BASE, "/integrations/gmail/auth/start");
 }
@@ -417,9 +462,10 @@ export interface GmailSearchOptions {
     to?: string;
     content?: string;
     hasAttachments?: boolean;
+    pageToken?: string;
 }
 
-export async function listGmailEmails(options: GmailSearchOptions = {}): Promise<{ count: number; emails: GmailEmail[]; query_used?: string }> {
+export async function listGmailEmails(options: GmailSearchOptions = {}): Promise<{ count: number; emails: GmailEmail[]; query_used?: string; next_page_token?: string }> {
     const params = new URLSearchParams();
     if (options.count) params.append("count", options.count.toString());
     if (options.q) params.append("q", options.q);
@@ -427,9 +473,10 @@ export async function listGmailEmails(options: GmailSearchOptions = {}): Promise
     if (options.to) params.append("to_mail", options.to);
     if (options.content) params.append("content_search", options.content);
     if (options.hasAttachments) params.append("has_attachments", "true");
+    if (options.pageToken) params.append("page_token", options.pageToken);
 
     const query = params.toString();
-    return apiFetch<{ count: number; emails: GmailEmail[]; query_used?: string }>(`/integrations/gmail/check${query ? `?${query}` : ""}`);
+    return apiFetch<{ count: number; emails: GmailEmail[]; query_used?: string; next_page_token?: string }>(`/integrations/gmail/check${query ? `?${query}` : ""}`);
 }
 
 export async function ingestGmailEmails(

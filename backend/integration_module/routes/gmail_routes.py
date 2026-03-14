@@ -28,7 +28,11 @@ router = APIRouter(prefix="/integrations/gmail", tags=["Gmail Integration"])
 # Configuration
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile"
+]
 
 def _get_redirect_uri():
     backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "https://localhost:8000").rstrip("/")
@@ -138,6 +142,78 @@ def gmail_disconnect():
     if "main_user" in user_credentials:
         del user_credentials["main_user"]
     return {"message": "Gmail disconnected."}
+
+@router.get("/profile")
+def gmail_profile():
+    creds_data = user_credentials.get("main_user")
+    if not creds_data:
+        raise HTTPException(status_code=401, detail="User not authenticated.")
+    
+    credentials = Credentials(**creds_data)
+    try:
+        from googleapiclient.discovery import build
+        service = build('oauth2', 'v2', credentials=credentials)
+        user_info = service.userinfo().get().execute()
+        return {
+            "name": user_info.get("name"),
+            "email": user_info.get("email"),
+            "picture": user_info.get("picture")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/labels")
+def gmail_labels():
+    creds_data = user_credentials.get("main_user")
+    if not creds_data:
+        raise HTTPException(status_code=401, detail="User not authenticated.")
+    
+    credentials = Credentials(**creds_data)
+    try:
+        service = gmail.get_gmail_service(credentials)
+        results = service.users().labels().list(userId='me').execute()
+        labels = results.get('labels', [])
+        
+        # Filter for system labels and useful user labels
+        system_ids = ['INBOX', 'STARRED', 'SENT', 'DRAFTS', 'SPAM', 'TRASH']
+        filtered_labels = []
+        for l in labels:
+            if l['id'] in system_ids or l.get('labelListVisibility') != 'labelHide':
+                filtered_labels.append(l)
+        
+        return {"labels": filtered_labels}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/threads/{thread_id}")
+def gmail_thread_detail(thread_id: str):
+    creds_data = user_credentials.get("main_user")
+    if not creds_data:
+        raise HTTPException(status_code=401, detail="User not authenticated.")
+    
+    credentials = Credentials(**creds_data)
+    try:
+        service = gmail.get_gmail_service(credentials)
+        thread = service.users().threads().get(userId='me', id=thread_id, format='full').execute()
+        return thread
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/messages/{message_id}/attachments/{attachment_id}")
+def gmail_attachment(message_id: str, attachment_id: str):
+    creds_data = user_credentials.get("main_user")
+    if not creds_data:
+        raise HTTPException(status_code=401, detail="User not authenticated.")
+    
+    credentials = Credentials(**creds_data)
+    try:
+        service = gmail.get_gmail_service(credentials)
+        attachment = service.users().messages().attachments().get(
+            userId="me", messageId=message_id, id=attachment_id
+        ).execute()
+        return attachment
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/check")
 def gmail_check(
