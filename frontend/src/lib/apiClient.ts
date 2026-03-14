@@ -483,7 +483,8 @@ export async function listGmailEmails(options: GmailSearchOptions = {}): Promise
 
 export async function ingestGmailEmails(
     sessionId: string,
-    messageIds: string[]
+    messageIds: string[],
+    includeAttachments: boolean = true
 ): Promise<GmailIngestResponse> {
     return apiFetch<GmailIngestResponse>("/integrations/gmail/ingest", {
         method: "POST",
@@ -491,6 +492,7 @@ export async function ingestGmailEmails(
         body: JSON.stringify({
             session_id: sessionId,
             message_ids: messageIds,
+            include_attachments: includeAttachments,
         }),
     });
 }

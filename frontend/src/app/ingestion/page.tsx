@@ -175,7 +175,7 @@ export default function IngestionPage() {
         }
     };
 
-    const syncSelectedGmailEmails = async (overrideIds?: string[]) => {
+    const syncSelectedGmailEmails = async (overrideIds?: string[], includeAttachments: boolean = true) => {
         const sid = await ensureSessionId();
         if (!sid) {
             setUploadError('No active session. Create/select one first.');
@@ -195,7 +195,7 @@ export default function IngestionPage() {
         setGmailSyncing(true);
         setUploadError(null);
         try {
-            const result = await ingestGmailEmails(sid, idsToIngest);
+            const result = await ingestGmailEmails(sid, idsToIngest, includeAttachments);
             setGmailMessage(result.message);
             await refreshReviewGate(sid);
         } catch (e) {
@@ -1041,10 +1041,9 @@ export default function IngestionPage() {
             {gmailReplicaOpen && (
                 <GmailReplica 
                     onClose={() => setGmailReplicaOpen(false)}
-                    onIngest={async (ids) => {
-                        setSelectedGmailEmails(ids);
+                    onIngest={(ids, includeAtts) => {
+                        syncSelectedGmailEmails(ids, includeAtts);
                         setGmailReplicaOpen(false);
-                        await syncSelectedGmailEmails(ids);
                     }}
                     isIngesting={gmailSyncing}
                 />

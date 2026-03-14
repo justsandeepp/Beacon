@@ -17,7 +17,7 @@ import {
 
 interface GmailReplicaProps {
     onClose: () => void;
-    onIngest: (selectedIds: string[]) => void;
+    onIngest: (selectedIds: string[], includeAttachments?: boolean) => void;
     isIngesting: boolean;
 }
 
@@ -44,8 +44,8 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
     const [searchQuery, setSearchQuery] = useState('');
     const [fromMail, setFromMail] = useState('');
     const [toMail, setToMail] = useState('');
-    const [contentSearch, setContentSearch] = useState('');
-    const [hasAttachments, setHasAttachments] = useState(false);
+    const [includeAttachments, setIncludeAttachments] = useState(true);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
     const fetchStatus = useCallback(async () => {
         try {
@@ -65,10 +65,33 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
         setLoading(true);
         setError(null);
         try {
+            // Build the base query string
+            let qParts = [];
+            
+            // Priority: folder selection usually overrides the main 'searchQuery' but filters work independently
+            // If the user is searching for something specific in the main search bar, we use it.
+            if (options.q !== undefined) {
+                if (options.q) qParts.push(options.q);
+            } else if (searchQuery) {
+                qParts.push(searchQuery);
+            }
+
+            // Independent From/To filters
+            const finalFrom = options.from !== undefined ? options.from : fromMail;
+            const finalTo = options.to !== undefined ? options.to : toMail;
+            
+            if (finalFrom) qParts.push(`from:${finalFrom}`);
+            if (finalTo) qParts.push(`to:${finalTo}`);
+            
+            // Folder label
+            if (activeFolder !== 'INBOX') {
+                qParts.push(`label:${activeFolder}`);
+            }
+
             const res = await listGmailEmails({ 
                 count: 30, 
                 ...options,
-                q: (options.q || searchQuery) + (activeFolder !== 'INBOX' ? ` label:${activeFolder}` : '')
+                q: qParts.join(' ')
             });
             setEmails(prev => append ? [...prev, ...res.emails] : res.emails);
             setNextPageToken(res.next_page_token || null);
@@ -80,7 +103,7 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
         } finally {
             setLoading(false);
         }
-    }, [searchQuery, activeFolder]);
+    }, [activeFolder]); // Only re-create when folder changes, others are used from state inside the function
 
     useEffect(() => {
         fetchStatus();
@@ -94,14 +117,7 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
 
     const handleSearch = (e?: React.FormEvent) => {
         e?.preventDefault();
-        setShowFilters(false);
-        fetchEmails({
-            q: searchQuery,
-            from: fromMail,
-            to: toMail,
-            content: contentSearch,
-            hasAttachments
-        });
+        fetchEmails();
     };
 
     const toggleSelection = (id: string) => {
@@ -221,96 +237,74 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                     <ArrowLeft size={20} />
                 </button>
                 
-                <div className="flex-1 relative flex items-center">
-                    <form onSubmit={handleSearch} className="flex-1 flex items-center bg-zinc-950/40 border border-white/10 rounded-xl px-4 py-2 hover:border-white/20 focus-within:border-cyan-500/50 focus-within:bg-zinc-950/60 transition-all">
-                        <Search size={18} className="text-zinc-500 mr-3" />
-                        <input 
-                            type="text" 
-                            placeholder="Search mail"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="bg-transparent border-none focus:outline-none text-sm text-zinc-100 w-full placeholder-zinc-600"
-                        />
-                        <button 
-                            type="button"
-                            onClick={() => setShowFilters(!showFilters)}
-                            className={cn("p-1.5 hover:bg-white/10 rounded-lg transition-colors", showFilters ? "text-cyan-400 bg-cyan-400/10" : "text-zinc-500")}
-                        >
-                            <Filter size={16} />
-                        </button>
-                    </form>
+                <div className="flex-1 flex items-center gap-3">
+                    <div className="flex-1 relative flex items-center">
+                        <form onSubmit={handleSearch} className="flex-1 flex items-center bg-zinc-950/40 border border-white/10 rounded-xl px-4 py-2 hover:border-white/20 focus-within:border-cyan-500/50 focus-within:bg-zinc-950/60 transition-all">
+                            <Search size={18} className="text-zinc-500 mr-3" />
+                            <input 
+                                type="text" 
+                                placeholder="Search mail..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="bg-transparent border-none focus:outline-none text-sm text-zinc-100 w-full placeholder-zinc-600"
+                            />
+                        </form>
+                    </div>
 
-                    {/* Advanced Search Dropdown */}
-                    <AnimatePresence>
-                        {showFilters && (
-                            <motion.div 
-                                initial={{ opacity: 0, y: 10 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: 10 }}
-                                className="absolute top-full left-0 right-0 mt-2 p-6 glass-card border-white/10 rounded-xl z-20 shadow-2xl space-y-4"
-                            >
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest pl-1">From</label>
-                                        <input 
-                                            type="text" 
-                                            value={fromMail} 
-                                            onChange={e => setFromMail(e.target.value)}
-                                            placeholder="sender@example.com"
-                                            className="w-full bg-zinc-950/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-100 outline-none focus:border-cyan-500/50"
-                                        />
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest pl-1">To</label>
-                                        <input 
-                                            type="text" 
-                                            value={toMail} 
-                                            onChange={e => setToMail(e.target.value)}
-                                            placeholder="recipient@example.com"
-                                            className="w-full bg-zinc-950/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-100 outline-none focus:border-cyan-500/50"
-                                        />
-                                    </div>
-                                </div>
-                                <div className="space-y-1.5">
-                                    <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest pl-1">Contains Words</label>
-                                    <input 
-                                        type="text" 
-                                        value={contentSearch} 
-                                        onChange={e => setContentSearch(e.target.value)}
-                                        placeholder="Specific keywords..."
-                                        className="w-full bg-zinc-950/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-100 outline-none focus:border-cyan-500/50"
-                                    />
-                                </div>
-                                <div className="flex items-center gap-3 pt-1">
-                                    <label className="flex items-center gap-2 cursor-pointer group">
-                                        <div 
-                                            onClick={() => setHasAttachments(!hasAttachments)}
-                                            className={cn("w-4 h-4 rounded border transition-all flex items-center justify-center", hasAttachments ? "bg-cyan-500 border-cyan-500" : "border-white/20 group-hover:border-white/40")}
-                                        >
-                                            {hasAttachments && <CheckSquare size={12} className="text-white" />}
-                                        </div>
-                                        <span className="text-xs text-zinc-400 group-hover:text-zinc-200 transition-colors">Has attachments</span>
-                                    </label>
-                                </div>
-                                <div className="flex justify-end gap-3 pt-2">
+                    <div className="flex items-center gap-2">
+                        <div className="flex items-center bg-zinc-950/40 border border-white/10 rounded-xl px-3 py-1.5 gap-2">
+                            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest border-r border-white/10 pr-2">From</label>
+                            <input 
+                                type="text" 
+                                value={fromMail} 
+                                onChange={e => setFromMail(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                                placeholder="sender"
+                                className="bg-transparent border-none focus:outline-none text-[11px] text-zinc-100 w-24 placeholder-zinc-700 font-mono"
+                            />
+                        </div>
+                        <div className="flex items-center bg-zinc-950/40 border border-white/10 rounded-xl px-3 py-1.5 gap-2">
+                            <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest border-r border-white/10 pr-2">To</label>
+                            <input 
+                                type="text" 
+                                value={toMail} 
+                                onChange={e => setToMail(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                                placeholder="recipient"
+                                className="bg-transparent border-none focus:outline-none text-[11px] text-zinc-100 w-24 placeholder-zinc-700 font-mono"
+                            />
+                        </div>
+                    </div>
+
+                    {/* Labels Dropdown */}
+                    <div className="relative group">
+                        <button className="flex items-center gap-2 px-4 py-2 bg-zinc-950/40 border border-white/10 rounded-xl text-sm text-zinc-300 hover:border-white/20 transition-all whitespace-nowrap">
+                            <Filter size={16} className="text-cyan-400" />
+                            <span className="max-w-[100px] truncate">
+                                {labels.find(l => l.id === activeFolder)?.name || 'Labels'}
+                            </span>
+                            <ChevronDown size={14} className="text-zinc-600" />
+                        </button>
+                        <div className="absolute top-full right-0 mt-2 w-56 glass-card border-white/10 rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[60] py-2 overflow-hidden">
+                            <div className="max-h-[60vh] overflow-y-auto custom-scrollbar">
+                                <p className="px-4 py-1 text-[9px] font-bold text-zinc-600 uppercase tracking-widest">Custom Labels</p>
+                                {labels.map(label => (
                                     <button 
-                                        onClick={() => {
-                                            setFromMail(''); setToMail(''); setContentSearch(''); setHasAttachments(false);
-                                        }}
-                                        className="px-4 py-1.5 hover:bg-white/5 text-zinc-500 hover:text-zinc-300 text-xs font-medium rounded-lg"
+                                        key={label.id}
+                                        onClick={() => { setActiveFolder(label.id); setViewMode('list'); setSearchQuery(''); }}
+                                        className={cn(
+                                            "w-full flex items-center gap-3 px-4 py-2 text-xs transition-all hover:bg-white/5",
+                                            activeFolder === label.id ? "text-zinc-100 font-bold bg-white/5" : "text-zinc-400"
+                                        )}
                                     >
-                                        Reset
+                                        <div className="w-1.5 h-1.5 rounded-full border border-white/20" />
+                                        <span className="truncate">{label.name}</span>
                                     </button>
-                                    <button 
-                                        onClick={() => handleSearch()}
-                                        className="px-6 py-1.5 bg-cyan-500 hover:bg-cyan-600 text-white text-xs font-bold rounded-lg transition-all shadow-lg shadow-cyan-500/20"
-                                    >
-                                        Search
-                                    </button>
-                                </div>
-                            </motion.div>
-                        )}
-                    </AnimatePresence>
+                                ))}
+                                {labels.length === 0 && <p className="px-4 py-3 text-[10px] text-zinc-600 italic">No custom labels</p>}
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-3 ml-4">
@@ -323,7 +317,7 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                     </button>
                     {profile ? (
                         <div className="flex items-center gap-3 pl-2 border-l border-white/10">
-                            <div className="flex flex-col items-end hidden sm:flex">
+                        <div className="flex-col items-end hidden sm:flex">
                                 <span className="text-[11px] font-bold text-zinc-200 leading-none">{profile.name}</span>
                                 <span className="text-[9px] text-zinc-500 leading-none mt-1">{profile.email}</span>
                             </div>
@@ -365,70 +359,64 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                     )}
                 </AnimatePresence>
                 {/* Sidebar */}
-                <div className="w-64 border-r border-white/5 p-4 space-y-1 hidden md:block">
-                    {systemFolders.map(folder => (
-                        <button 
-                            key={folder.id}
-                            onClick={() => { setActiveFolder(folder.id); setViewMode('list'); }}
-                            className={cn(
-                                "w-full flex items-center gap-4 px-4 py-2.5 rounded-xl text-sm transition-all",
-                                activeFolder === folder.id 
-                                    ? "bg-cyan-500/10 text-cyan-400 font-bold border border-cyan-500/20" 
-                                    : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300 border border-transparent"
-                            )}
-                        >
-                            <folder.icon size={18} className={cn(activeFolder === folder.id ? folder.color : "text-zinc-500")} />
-                            {folder.label}
-                        </button>
-                    ))}
+                <motion.div 
+                    animate={{ width: sidebarCollapsed ? 64 : 260 }}
+                    transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                    className="border-r border-white/5 flex flex-col pt-4 overflow-hidden relative group/sidebar"
+                >
+                    <button 
+                        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                        className="absolute top-2 right-2 p-1.5 bg-white/5 border border-white/10 rounded-lg text-zinc-500 opacity-0 group-hover/sidebar:opacity-100 transition-opacity z-10"
+                    >
+                        <MoreVertical size={14} />
+                    </button>
 
-                    <div className="mt-8 pt-6 border-t border-white/5">
-                        <p className="px-4 text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-4">Labels</p>
-                        <div className="space-y-1 max-h-[30vh] overflow-y-auto custom-scrollbar">
-                            {labels.map(label => (
+                    <div className="flex-1 space-y-1 px-3">
+                        {systemFolders.map(folder => {
+                            const isActive = activeFolder === folder.id;
+                            return (
                                 <button 
-                                    key={label.id} 
-                                    onClick={() => { setActiveFolder(label.id); setViewMode('list'); }}
+                                    key={folder.id}
+                                    onClick={() => { setActiveFolder(folder.id); setViewMode('list'); setSearchQuery(''); }}
                                     className={cn(
-                                        "w-full flex items-center gap-4 px-4 py-2 rounded-xl text-sm transition-all",
-                                        activeFolder === label.id 
-                                            ? "bg-white/10 text-zinc-100 font-medium" 
-                                            : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                                        "w-full flex items-center gap-4 px-3 py-2.5 rounded-xl transition-all duration-200 border",
+                                        isActive 
+                                            ? "bg-cyan-500/10 text-cyan-400 font-bold border-cyan-500/20" 
+                                            : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300 border-transparent"
                                     )}
                                 >
-                                    <div className="w-2 h-2 rounded-full border border-white/20" />
-                                    <span className="truncate">{label.name}</span>
+                                    <div className="flex-shrink-0">
+                                        <folder.icon size={isActive ? 20 : 18} className={isActive ? folder.color : "text-zinc-500"} />
+                                    </div>
+                                    {!sidebarCollapsed && <span className="text-sm truncate">{folder.label}</span>}
                                 </button>
-                            ))}
-                        </div>
+                            );
+                        })}
                     </div>
-                </div>
+                </motion.div>
 
                 {/* Main Content Area */}
                 <div className="flex-1 flex flex-col min-w-0 bg-zinc-950/20">
                     <div className="px-6 py-3 border-b border-white/5 flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <button 
-                                onClick={toggleSelectAll}
-                                className="p-1 hover:bg-white/10 rounded transition-colors text-zinc-500"
-                            >
-                                {selectedIds.length === emails.length && emails.length > 0 ? <CheckSquare size={18} className="text-cyan-400" /> : <Square size={18} />}
-                            </button>
-                            <div className="flex items-center gap-1 border-l border-white/10 pl-4">
-                                <button className="p-2 hover:bg-white/10 rounded-lg text-zinc-500 transition-colors">
-                                    <Trash2 size={16} />
+                        <div className="flex items-center gap-2 text-xs text-zinc-500 font-mono">
+                            <span className="mr-2">1 - {emails.length} of 100+</span>
+                            <div className="flex items-center gap-1 border-l border-white/10 pl-3">
+                                <button 
+                                    onClick={() => fetchEmails({ pageToken: undefined })} // Simple reset for now or handle prev logic
+                                    className="p-1.5 hover:bg-white/10 rounded-lg text-zinc-500 transition-colors disabled:opacity-30"
+                                    title="Previous Page"
+                                >
+                                    <motion.div whileHover={{ x: -2 }}><ChevronDown size={16} className="rotate-90" /></motion.div>
                                 </button>
-                                <button className="p-2 hover:bg-white/10 rounded-lg text-zinc-500 transition-colors">
-                                    <AlertCircle size={16} />
-                                </button>
-                                <button className="p-2 hover:bg-white/10 rounded-lg text-zinc-500 transition-colors">
-                                    <MoreVertical size={16} />
+                                <button 
+                                    onClick={() => nextPageToken && fetchEmails({ pageToken: nextPageToken })}
+                                    disabled={!nextPageToken}
+                                    className="p-1.5 hover:bg-white/10 rounded-lg text-zinc-500 transition-colors disabled:opacity-30"
+                                    title="Next Page"
+                                >
+                                    <motion.div whileHover={{ x: 2 }}><ChevronDown size={16} className="-rotate-90" /></motion.div>
                                 </button>
                             </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 text-xs text-zinc-500 font-mono">
-                            <span>1 - {emails.length} of 100+</span>
                         </div>
                     </div>
 
@@ -610,13 +598,24 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                         className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 px-6 py-4 glass-card border-cyan-500/30 bg-cyan-950/20 shadow-2xl z-30"
                         style={{ backdropFilter: 'blur(20px)' }}
                     >
-                        <div className="flex flex-col">
+                        <div className="flex flex-col border-r border-white/10 pr-4">
                             <span className="text-cyan-400 font-bold text-sm">{selectedIds.length} emails selected</span>
                             <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-widest">Ready for ingestion</span>
                         </div>
+                        
+                        <label className="flex items-center gap-2 cursor-pointer group px-2">
+                            <div 
+                                onClick={() => setIncludeAttachments(!includeAttachments)}
+                                className={cn("w-4 h-4 rounded border transition-all flex items-center justify-center", includeAttachments ? "bg-cyan-500 border-cyan-500" : "border-white/20 group-hover:border-white/40")}
+                            >
+                                {includeAttachments && <CheckSquare size={12} className="text-zinc-950" />}
+                            </div>
+                            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest group-hover:text-zinc-200 transition-colors">Include Attachments</span>
+                        </label>
+
                         <div className="w-px h-8 bg-white/10 mx-2" />
                         <button 
-                            onClick={() => onIngest(selectedIds)}
+                            onClick={() => onIngest(selectedIds, includeAttachments)}
                             disabled={isIngesting}
                             className="bg-cyan-500 hover:bg-cyan-400 text-zinc-950 font-black px-8 py-2.5 rounded-xl text-xs uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(6,182,212,0.4)] disabled:opacity-50 flex items-center gap-2"
                         >

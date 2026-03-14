@@ -191,8 +191,6 @@ export default function ProfilePage() {
                     });
                 }
             } else {
-                setGmailEmails([]);
-                setSelectedGmailEmails([]);
                 const gmailIntegration = integrations.find((i) => i.type === "gmail");
                 if (gmailIntegration) {
                     updateIntegration(gmailIntegration.id, {
@@ -552,34 +550,6 @@ export default function ProfilePage() {
                                             <span className="text-zinc-500 uppercase tracking-wider">Status</span>
                                             <span className="text-emerald-400 font-bold">AUTHENTICATED</span>
                                         </div>
-                                        <div className="space-y-2">
-                                            <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-600">Recent Threads</p>
-                                            <div className="max-h-32 overflow-y-auto pr-1 space-y-1 custom-scrollbar">
-                                                {gmailEmails.length === 0 ? (
-                                                    <p className="text-[10px] text-zinc-600 italic px-2">{gmailLoading ? "Loading..." : "None found"}</p>
-                                                ) : (
-                                                    gmailEmails.map((email) => (
-                                                        <label key={email.message_id} className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-white/5 transition-colors cursor-pointer group/item">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={selectedGmailEmails.includes(email.message_id)}
-                                                                onChange={() =>
-                                                                    setSelectedGmailEmails((prev) =>
-                                                                        prev.includes(email.message_id)
-                                                                            ? prev.filter((id) => id !== email.message_id)
-                                                                            : [...prev, email.message_id]
-                                                                    )
-                                                                }
-                                                                className="w-3.5 h-3.5 rounded border-white/10 bg-zinc-950 text-red-500"
-                                                            />
-                                                            <span className="text-[11px] text-zinc-400 truncate group-hover/item:text-zinc-200" title={email.subject}>
-                                                                {email.subject || "(No Subject)"}
-                                                            </span>
-                                                        </label>
-                                                    ))
-                                                )}
-                                            </div>
-                                        </div>
                                     </div>
                                 )}
 
@@ -587,13 +557,15 @@ export default function ProfilePage() {
                                     <div className="pt-2 mt-auto space-y-2 text-center">
                                         {isConnected ? (
                                             <>
-                                                <button
-                                                    onClick={isSlack ? ingestSelectedSlackChannels : ingestSelectedGmailEmails}
-                                                    disabled={(isSlack ? (slackIngesting || selectedSlackChannels.length === 0) : (gmailIngesting || selectedGmailEmails.length === 0))}
-                                                    className="w-full py-2 rounded-lg font-bold text-xs transition-all bg-white text-zinc-950 hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed uppercase tracking-wider"
-                                                >
-                                                    {(isSlack ? (slackIngesting ? "Ingesting..." : "Sync Selected") : (gmailIngesting ? "Ingesting..." : "Sync Selected"))}
-                                                </button>
+                                                {isSlack && (
+                                                    <button
+                                                        onClick={ingestSelectedSlackChannels}
+                                                        disabled={slackIngesting || selectedSlackChannels.length === 0}
+                                                        className="w-full py-2 rounded-lg font-bold text-xs transition-all bg-white text-zinc-950 hover:bg-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed uppercase tracking-wider"
+                                                    >
+                                                        {slackIngesting ? "Ingesting..." : "Sync Selected"}
+                                                    </button>
+                                                )}
                                                 <button
                                                     onClick={isSlack ? disconnectSlackWorkspace : disconnectGmailAccount}
                                                     className="text-[10px] font-bold text-zinc-600 hover:text-red-400 transition-colors uppercase tracking-widest"

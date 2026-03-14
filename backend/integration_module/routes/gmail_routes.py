@@ -52,6 +52,7 @@ def _get_frontend_profile_url():
 class GmailIngestRequest(BaseModel):
     session_id: str
     message_ids: List[str]
+    include_attachments: bool = True
 
 @router.get("/auth/start")
 def gmail_login():
@@ -298,20 +299,21 @@ def gmail_ingest(body: GmailIngestRequest):
                 })
             
             # Attachment chunks
-            for att in email_data["attachments"]:
-                if att["filename"].lower().endswith(".pdf"):
-                    try:
-                        pdf_data = gmail.download_attachment(service, msg_id, att["attachment_id"])
-                        extracted_text = pdf.extract_text_from_pdf_bytes(pdf_data)
-                        if extracted_text and len(extracted_text) >= 15:
-                            chunk_dicts.append({
-                                "cleaned_text": extracted_text[:2000],
-                                "source_ref": f"gmail:{msg_id}:att:{att['filename']}",
-                                "speaker": email_data["from"],
-                                "source_type": "gmail",
-                            })
-                    except Exception as e:
-                        print(f"Failed to process attachment {att['filename']}: {e}")
+            if body.include_attachments:
+                for att in email_data["attachments"]:
+                    if att["filename"].lower().endswith(".pdf"):
+                        try:
+                            pdf_data = gmail.download_attachment(service, msg_id, att["attachment_id"])
+                            extracted_text = pdf.extract_text_from_pdf_bytes(pdf_data)
+                            if extracted_text and len(extracted_text) >= 15:
+                                chunk_dicts.append({
+                                    "cleaned_text": extracted_text[:2000],
+                                    "source_ref": f"gmail:{msg_id}:att:{att['filename']}",
+                                    "speaker": email_data["from"],
+                                    "source_type": "gmail",
+                                })
+                        except Exception as e:
+                            print(f"Failed to process attachment {att['filename']}: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gmail extraction failed: {e}")
 
