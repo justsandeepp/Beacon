@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { 
     Search, Filter, ChevronDown, Mail, Inbox, Send, Star, Clock, Trash2, 
     MoreVertical, CheckSquare, Square, RefreshCcw, X, Paperclip, 
-    AlertCircle, Loader2, ArrowLeft, Trash, FileText, Download
+    AlertCircle, Loader2, ArrowLeft, Trash, FileText, Download, Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -65,26 +65,28 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
         setLoading(true);
         setError(null);
         try {
-            // Build the base query string
             let qParts = [];
             
-            // Priority: folder selection usually overrides the main 'searchQuery' but filters work independently
-            // If the user is searching for something specific in the main search bar, we use it.
+            // Use provided 'q' or current search query
             if (options.q !== undefined) {
                 if (options.q) qParts.push(options.q);
             } else if (searchQuery) {
                 qParts.push(searchQuery);
             }
 
-            // Independent From/To filters
+            // From/To filters - These are now "Global" if provided
             const finalFrom = options.from !== undefined ? options.from : fromMail;
             const finalTo = options.to !== undefined ? options.to : toMail;
             
             if (finalFrom) qParts.push(`from:${finalFrom}`);
             if (finalTo) qParts.push(`to:${finalTo}`);
             
-            // Folder label
-            if (activeFolder !== 'INBOX') {
+            // If we have From/To/Subject(q), we might want to search All Mail.
+            // But if we are explicitly on a folder and NO From/To is provided, use the label.
+            // The user said: "should not be label specific work for all messages"
+            const queryIsGlobal = !!(finalFrom || finalTo);
+
+            if (!queryIsGlobal && activeFolder !== 'INBOX') {
                 qParts.push(`label:${activeFolder}`);
             }
 
@@ -103,7 +105,16 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
         } finally {
             setLoading(false);
         }
-    }, [activeFolder]); // Only re-create when folder changes, others are used from state inside the function
+    }, [searchQuery, activeFolder, fromMail, toMail]);
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            if (status?.connected) {
+                fetchEmails();
+            }
+        }, 500); // 500ms debounce
+        return () => clearTimeout(timer);
+    }, [fromMail, toMail, fetchEmails, status?.connected]);
 
     useEffect(() => {
         fetchStatus();
@@ -113,7 +124,7 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
         if (status?.connected) {
             fetchEmails();
         }
-    }, [fetchEmails, status?.connected, activeFolder]);
+    }, [fetchEmails, status?.connected, activeFolder]); // activeFolder change triggers immediately
 
     const handleSearch = (e?: React.FormEvent) => {
         e?.preventDefault();
@@ -233,9 +244,11 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
         >
             {/* Header / Search Bar Area */}
             <div className="flex items-center gap-4 px-6 py-4 border-b border-white/5 bg-white/5">
-                <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full text-zinc-400 transition-colors">
-                    <ArrowLeft size={20} />
-                </button>
+                <div className="flex items-center gap-2">
+                    <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full text-zinc-400 transition-colors">
+                        <ArrowLeft size={20} />
+                    </button>
+                </div>
                 
                 <div className="flex-1 flex items-center gap-3">
                     <div className="flex-1 relative flex items-center">
@@ -258,7 +271,6 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                                 type="text" 
                                 value={fromMail} 
                                 onChange={e => setFromMail(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && handleSearch()}
                                 placeholder="sender"
                                 className="bg-transparent border-none focus:outline-none text-[11px] text-zinc-100 w-24 placeholder-zinc-700 font-mono"
                             />
@@ -269,40 +281,9 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                                 type="text" 
                                 value={toMail} 
                                 onChange={e => setToMail(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && handleSearch()}
                                 placeholder="recipient"
                                 className="bg-transparent border-none focus:outline-none text-[11px] text-zinc-100 w-24 placeholder-zinc-700 font-mono"
                             />
-                        </div>
-                    </div>
-
-                    {/* Labels Dropdown */}
-                    <div className="relative group">
-                        <button className="flex items-center gap-2 px-4 py-2 bg-zinc-950/40 border border-white/10 rounded-xl text-sm text-zinc-300 hover:border-white/20 transition-all whitespace-nowrap">
-                            <Filter size={16} className="text-cyan-400" />
-                            <span className="max-w-[100px] truncate">
-                                {labels.find(l => l.id === activeFolder)?.name || 'Labels'}
-                            </span>
-                            <ChevronDown size={14} className="text-zinc-600" />
-                        </button>
-                        <div className="absolute top-full right-0 mt-2 w-56 glass-card border-white/10 rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[60] py-2 overflow-hidden">
-                            <div className="max-h-[60vh] overflow-y-auto custom-scrollbar">
-                                <p className="px-4 py-1 text-[9px] font-bold text-zinc-600 uppercase tracking-widest">Custom Labels</p>
-                                {labels.map(label => (
-                                    <button 
-                                        key={label.id}
-                                        onClick={() => { setActiveFolder(label.id); setViewMode('list'); setSearchQuery(''); }}
-                                        className={cn(
-                                            "w-full flex items-center gap-3 px-4 py-2 text-xs transition-all hover:bg-white/5",
-                                            activeFolder === label.id ? "text-zinc-100 font-bold bg-white/5" : "text-zinc-400"
-                                        )}
-                                    >
-                                        <div className="w-1.5 h-1.5 rounded-full border border-white/20" />
-                                        <span className="truncate">{label.name}</span>
-                                    </button>
-                                ))}
-                                {labels.length === 0 && <p className="px-4 py-3 text-[10px] text-zinc-600 italic">No custom labels</p>}
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -362,16 +343,19 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                 <motion.div 
                     animate={{ width: sidebarCollapsed ? 64 : 260 }}
                     transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                    className="border-r border-white/5 flex flex-col pt-4 overflow-hidden relative group/sidebar"
+                    className="border-r border-white/5 flex flex-col overflow-hidden relative group/sidebar bg-zinc-950/20"
                 >
-                    <button 
-                        onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-                        className="absolute top-2 right-2 p-1.5 bg-white/5 border border-white/10 rounded-lg text-zinc-500 opacity-0 group-hover/sidebar:opacity-100 transition-opacity z-10"
-                    >
-                        <MoreVertical size={14} />
-                    </button>
+                    <div className="p-4 flex items-center">
+                        <button 
+                            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                            className="p-2 hover:bg-white/10 rounded-xl text-zinc-400 transition-colors"
+                            title={sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+                        >
+                            <Menu size={22} />
+                        </button>
+                    </div>
 
-                    <div className="flex-1 space-y-1 px-3">
+                    <div className="flex-1 space-y-1 px-3 mt-2 overflow-y-auto custom-scrollbar pb-10">
                         {systemFolders.map(folder => {
                             const isActive = activeFolder === folder.id;
                             return (
@@ -379,19 +363,46 @@ export default function GmailReplica({ onClose, onIngest, isIngesting }: GmailRe
                                     key={folder.id}
                                     onClick={() => { setActiveFolder(folder.id); setViewMode('list'); setSearchQuery(''); }}
                                     className={cn(
-                                        "w-full flex items-center gap-4 px-3 py-2.5 rounded-xl transition-all duration-200 border",
+                                        "w-full flex items-center gap-4 px-3 py-2 rounded-lg transition-all border",
                                         isActive 
                                             ? "bg-cyan-500/10 text-cyan-400 font-bold border-cyan-500/20" 
                                             : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300 border-transparent"
                                     )}
                                 >
                                     <div className="flex-shrink-0">
-                                        <folder.icon size={isActive ? 20 : 18} className={isActive ? folder.color : "text-zinc-500"} />
+                                        <folder.icon size={18} className={isActive ? folder.color : "text-zinc-500"} />
                                     </div>
-                                    {!sidebarCollapsed && <span className="text-sm truncate">{folder.label}</span>}
+                                    {!sidebarCollapsed && <span className="text-xs truncate">{folder.label}</span>}
                                 </button>
                             );
                         })}
+
+                        {labels.length > 0 && (
+                            <>
+                                <div className="h-px bg-white/5 my-4 mx-2" />
+                                {!sidebarCollapsed && <p className="px-3 mb-2 text-[9px] font-bold text-zinc-600 uppercase tracking-widest">Labels</p>}
+                                {labels.map(label => {
+                                    const isActive = activeFolder === label.id;
+                                    return (
+                                        <button 
+                                            key={label.id}
+                                            onClick={() => { setActiveFolder(label.id); setViewMode('list'); setSearchQuery(''); }}
+                                            className={cn(
+                                                "w-full flex items-center gap-4 px-3 py-2 rounded-lg transition-all border",
+                                                isActive 
+                                                    ? "bg-white/10 text-zinc-100 font-bold border-white/10" 
+                                                    : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300 border-transparent"
+                                            )}
+                                        >
+                                            <div className="flex-shrink-0 w-4.5 flex justify-center">
+                                                <div className={cn("w-1.5 h-1.5 rounded-full border", isActive ? "border-cyan-400 bg-cyan-400" : "border-zinc-700")} />
+                                            </div>
+                                            {!sidebarCollapsed && <span className="text-xs truncate">{label.name}</span>}
+                                        </button>
+                                    );
+                                })}
+                            </>
+                        )}
                     </div>
                 </motion.div>
 
