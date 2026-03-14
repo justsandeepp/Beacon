@@ -24,14 +24,18 @@ from classifier import classify_chunks
 from schema import ClassifiedChunk, SignalLabel
 
 import google.auth.exceptions
-from google.auth.transport.requests import Request
+from google.auth.transport.requests import Request as AuthRequest
 
 router = APIRouter(prefix="/integrations/gmail", tags=["Gmail Integration"])
+
+# Relax token scope requirement to avoid "Scope has changed" errors
+os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 # Configuration
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 SCOPES = [
+    "openid",
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile"
@@ -91,7 +95,7 @@ def _get_credentials():
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             try:
-                creds.refresh(Request())
+                creds.refresh(AuthRequest())
                 # Update store
                 user_credentials["main_user"].update({
                     "token": creds.token,
