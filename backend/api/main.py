@@ -1,7 +1,10 @@
 import os
 import importlib.util
-from fastapi import FastAPI
+import time
+from datetime import datetime, timezone
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import sys
 from dotenv import load_dotenv
 
@@ -12,6 +15,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INTEGRATION_MODULE_ROOT = os.path.join(PROJECT_ROOT, "Integration Module")
 ENABLE_LEGACY_GMAIL_ROUTES = os.getenv("ENABLE_LEGACY_GMAIL_ROUTES", "false").lower() == "true"
+CRON_HEALTH_TOKEN = os.getenv("CRON_HEALTH_TOKEN", "").strip()
+APP_STARTED_AT = time.time()
 load_dotenv(os.path.join(PROJECT_ROOT, "Noise filter module", ".env"), override=False)
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
 
@@ -74,6 +79,41 @@ if ENABLE_LEGACY_GMAIL_ROUTES:
     except Exception as e:
         print(f"Warning: Gmail router not loaded: {e}")
 
+
+def _build_health_payload():
+    return {
+        "status": "ok",
+        "service": "beacon-backend",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "uptime_seconds": int(time.time() - APP_STARTED_AT),
+    }
+
+
+def _is_authorized_cron_request(request: Request) -> bool:
+    if not CRON_HEALTH_TOKEN:
+        return True
+
+    query_token = request.query_params.get("token", "")
+    header_token = request.headers.get("x-cron-token", "")
+    return query_token == CRON_HEALTH_TOKEN or header_token == CRON_HEALTH_TOKEN
+
+
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "BRD Generation API is running."}
+
+
+@app.get("/healthz")
+def healthz(request: Request):
+    if not _is_authorized_cron_request(request):
+        return JSONResponse(status_code=401, content={"status": "unauthorized"})
+
+    return _build_health_payload()
+
+
+@app.head("/healthz")
+def healthz_head(request: Request):
+    if not _is_authorized_cron_request(request):
+        return JSONResponse(status_code=401, content={"status": "unauthorized"})
+
+    return JSONResponse(status_code=200, content={})
