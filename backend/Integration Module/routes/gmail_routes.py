@@ -14,7 +14,8 @@ router = APIRouter(prefix="/gmail", tags=["Gmail"])
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-REDIRECT_URI = "http://localhost:8000/gmail/oauth_redirect"
+BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "https://localhost:8000").rstrip("/")
+REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", f"{BACKEND_PUBLIC_URL}/gmail/oauth_redirect")
 
 @router.get("/login")
 def gmail_login():
