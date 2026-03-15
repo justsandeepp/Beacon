@@ -250,9 +250,14 @@ export default function DashboardShell({ children }: { children: React.ReactNode
 
     const activeStage = useMemo(() => stages.find((s) => s.status === "running"), [stages]);
 
-    const handleLogout = () => {
-        logout();
-        router.push("/");
+    const handleLogout = async () => {
+        try {
+            await logout();
+        } finally {
+            // Use replace + hard navigation fallback to avoid bouncing back to protected routes.
+            router.replace("/");
+            window.location.href = "/";
+        }
     };
 
     return (

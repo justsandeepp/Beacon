@@ -107,6 +107,10 @@ _SOCIAL_NOISE = re.compile(
 _MIN_WORD_COUNT = 4  # Very short chunks are usually noise unless they contain keywords
 
 
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{1,}", (text or "").lower()))
+
+
 def apply_heuristics(chunk: dict) -> Optional[str]:
     """
     Fast-path rule-based classification.
@@ -158,12 +162,50 @@ SIGNAL_NOUNS = {
     "workflow", "process", "user", "access", "permission",
     "security", "compliance", "performance", "audit",
     "position", "model", "tool", "data", "pipeline",
-    "implementation", "design", "architecture", "service"
+    "implementation", "design", "architecture", "service",
+    "onboarding", "transcript", "metadata", "notification",
+    "queue", "search", "filter", "panel", "endpoint"
+}
+
+SIGNAL_VERBS = {
+    "must", "should", "need", "needs", "require", "requires", "required",
+    "shall", "support", "enable", "allow", "implement", "build", "track",
+    "detect", "process", "archive", "optimize"
+}
+
+TIMELINE_HINTS = {
+    "deadline", "milestone", "launch", "rollout", "delivery", "phase", "go-live"
+}
+
+DECISION_HINTS = {
+    "decided", "approved", "finalized", "selected", "chosen", "agreed"
+}
+
+FEEDBACK_HINTS = {
+    "feedback", "prefer", "concern", "issue", "pain", "friction", "request", "suggest"
 }
 
 def has_signal_nouns(text: str) -> bool:
-    words = set(text.lower().split())
+    words = _tokenize(text)
     return bool(words & SIGNAL_NOUNS)
+
+
+def has_signal_intent(text: str) -> bool:
+    words = _tokenize(text)
+    return bool(words & SIGNAL_VERBS) or bool(words & TIMELINE_HINTS) or bool(words & DECISION_HINTS) or bool(words & FEEDBACK_HINTS)
+
+
+def local_keyword_label(text: str) -> str:
+    words = _tokenize(text)
+    if words & DECISION_HINTS:
+        return "decision"
+    if words & TIMELINE_HINTS:
+        return "timeline_reference"
+    if words & FEEDBACK_HINTS:
+        return "stakeholder_feedback"
+    if words & SIGNAL_VERBS or words & SIGNAL_NOUNS:
+        return "requirement"
+    return "noise"
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +218,13 @@ def _classify_single_heuristic(item: tuple[int, dict]) -> tuple[int, dict, Optio
     Returns: (original_index, chunk, label_or_None, path)
     """
     idx, chunk = item
+    text = chunk.get("cleaned_text", "")
+    word_count = len(text.split())
     label = apply_heuristics(chunk)
     if label is not None:
         return (idx, chunk, label, "HEURISTIC")
-    elif not has_signal_nouns(chunk.get("cleaned_text", "")):
+    # Conservative domain gate: only short, context-poor text is auto-noise.
+    elif word_count < 10 and not has_signal_nouns(text) and not has_signal_intent(text):
         return (idx, chunk, "noise", "DOMAIN_GATE")
     else:
         return (idx, chunk, None, "LLM_PENDING")
@@ -354,20 +399,21 @@ def run_parallel_batches(
 def apply_confidence_threshold(result: dict) -> dict:
     """
     Adjust suppression and review flags based on confidence score.
-    ≥ 0.90  → accept automatically
-    0.70–0.89 → accept but flag for review
-    < 0.70  → force to noise, always flag for review
+    ≥ 0.85  → accept automatically
+    0.55–0.84 → accept but flag for review
+    < 0.55  → keep label, always flag for review (do not force to noise)
     """
     confidence = result["confidence"]
     result["flagged_for_review"] = False
 
-    if confidence >= 0.90:
+    if confidence >= 0.85:
         pass  # auto-accept
-    elif confidence >= 0.70:
+    elif confidence >= 0.55:
         result["flagged_for_review"] = True
     else:
-        result["label"] = "noise"
         result["flagged_for_review"] = True
+        if result.get("label") != "noise":
+            result["reasoning"] = f"Low-confidence label retained for review: {result.get('reasoning', '')}".strip()
 
     return result
 
@@ -392,7 +438,7 @@ def classify_chunks(chunks: list[dict], api_key: str, log_fn=None) -> list[Class
     if not chunks:
         return []
 
-    client = Groq(api_key=api_key)
+    client = Groq(api_key=api_key) if api_key else None
     total = len(chunks)
 
     # Shared thread-safe progress counter
@@ -416,8 +462,20 @@ def classify_chunks(chunks: list[dict], api_key: str, log_fn=None) -> list[Class
 
     # ── Phase 2: batch LLM calls ─────────────────────────────────────────────
     llm_results: dict[int, dict] = {}
-    if llm_pending:
+    if llm_pending and client is not None:
         llm_results = run_parallel_batches(llm_pending, client, progress_callback)
+    elif llm_pending:
+        # No API key: use local keyword classifier instead of forcing everything to noise.
+        for idx, chunk in llm_pending:
+            text = chunk.get("cleaned_text", "")
+            label = local_keyword_label(text)
+            llm_results[idx] = {
+                "label": label,
+                "confidence": 0.58 if label != "noise" else 0.52,
+                "reasoning": "Local keyword classification (LLM unavailable).",
+                "flagged_for_review": True,
+            }
+        progress_callback(len(llm_pending))
 
     # ── Assemble in original order ────────────────────────────────────────────
     all_results = {**fast_results, **llm_results}

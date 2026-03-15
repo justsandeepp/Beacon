@@ -6,6 +6,7 @@ import os
 import json
 import time
 import uuid
+import re
 from typing import List, Dict, Any, Callable, Optional
 from datetime import datetime, timezone
 import concurrent.futures
@@ -19,6 +20,19 @@ load_dotenv(_HERE / ".env")
 from groq import Groq, APIConnectionError, RateLimitError, APIStatusError
 from brd_module.storage import create_snapshot, get_signals_for_snapshot, store_brd_section
 from brd_module.hitl.versioned_ledger import is_section_locked, get_section_content, create_new_version
+
+
+_INLINE_SOURCE_ID_PATTERN = re.compile(
+    r"\s*\[[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\]"
+)
+
+
+def _strip_source_id_annotations(text: str) -> str:
+    if not text:
+        return text
+    cleaned = _INLINE_SOURCE_ID_PATTERN.sub("", text)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 def call_llm_with_retry(client: Groq, messages: List[Dict[str, str]], json_mode: bool = False, max_tokens: int = 2048) -> str:
     """Resilient LLM caller with exponential backoff. Model is resolved from GROQ_MODEL env var
@@ -43,7 +57,7 @@ def call_llm_with_retry(client: Groq, messages: List[Dict[str, str]], json_mode:
 
             # Strip HTML tags that the model may hallucinate (preserve <https://...> autolinks)
             clean_md = re.sub(r'<(?!https?://)[^>]+>', '', raw)
-            return clean_md.strip()
+            return _strip_source_id_annotations(clean_md)
         except APIConnectionError as e:
             # Network-level failure — always retry with backoff
             if attempt < 2:
@@ -103,7 +117,7 @@ Instructions:
 1. Group related requirements by theme.
 2. Number them sequentially.
 3. Write each as a clear functional requirement statement starting with 'The system shall...'.
-4. Include an inline attribution at the end of each requirement using the source chunk ID like so: [id].
+4. Do NOT include source IDs, UUIDs, or inline attributions in the final output.
 5. EXPLICITLY flag any requirements that appear contradictory or incomplete rather than silently resolving them. Put flags in a "Contradictions / Gaps" section at the end if necessary.
 6. STRICTURE: Output ONLY clean Markdown content. NEVER output HTML tags like <p>, <ul>, <li>, or <div>.
 Output ONLY the final markdown content for this section. Do not wrap in markdown code blocks.
@@ -226,7 +240,7 @@ def timeline_agent(session_id: str, snapshot_id: str, client: Groq = None) -> st
 Instructions:
 1. Generate a chronological list of project milestones and deadlines.
 2. For each entry, include the date or timeframe and what it refers to.
-3. Include an inline attribution at the end of each milestone using the source chunk ID like so: [id].
+3. Do NOT include source IDs, UUIDs, or inline attributions in the final output.
 4. CRITICAL CONSTRAINT: ONLY include dates and timeframes explicitly mentioned. NEVER invent or estimate dates.
 5. If a deadline is mentioned without a specific date (e.g. 'go-live'), list the deadline with 'Date not specified'.
 6. Do not include random meetings unless they represent a project milestone (like a sign-off or launch).
@@ -271,7 +285,7 @@ def decisions_agent(session_id: str, snapshot_id: str, client: Groq = None, addi
     prompt_text += """
 Instructions:
 1. Output a numbered list of confirmed project decisions.
-2. Include an inline attribution using the source chunk ID.
+2. Do NOT include source IDs, UUIDs, or inline attributions in the final output.
 3. EXPLICITLY flag any decisions that appear to contradict each other.
 4. STRICTURE: Output ONLY clean Markdown content. NEVER output HTML tags.
 Output ONLY the final markdown content for this section.

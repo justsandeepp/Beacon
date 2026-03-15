@@ -650,7 +650,7 @@ export default function IngestionPage() {
                             className="btn-primary w-full text-sm flex items-center justify-center gap-2 disabled:opacity-50"
                         >
                             <Mail size={13} />
-                            Advanced
+                            Connect to Gmail
                         </button>
                     ) : (
                         <div className="space-y-2">
@@ -659,7 +659,7 @@ export default function IngestionPage() {
                                 className="btn-primary w-full text-sm flex items-center justify-center gap-2"
                             >
                                 <Mail size={13} />
-                                Advanced
+                                Connect to Gmail
                             </button>
                             <button
                                 onClick={() => syncSelectedGmailEmails()}

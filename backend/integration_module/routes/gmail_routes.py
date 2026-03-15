@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import secrets
 import time
@@ -70,6 +71,21 @@ def _get_redirect_uri():
 def _get_frontend_profile_url():
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
     return f"{frontend_url}/profile"
+
+
+def _fallback_label_for_text(text: str) -> SignalLabel:
+    lower = (text or "").lower()
+    tokens = set(re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{1,}", lower))
+
+    if tokens & {"decided", "approved", "finalized", "selected", "agreed"}:
+        return SignalLabel.DECISION
+    if tokens & {"deadline", "milestone", "launch", "rollout", "delivery", "phase", "golive", "go-live"}:
+        return SignalLabel.TIMELINE_REFERENCE
+    if tokens & {"feedback", "prefer", "concern", "issue", "friction", "request", "suggest"}:
+        return SignalLabel.STAKEHOLDER_FEEDBACK
+    if tokens & {"must", "should", "need", "needs", "require", "required", "shall", "support", "enable", "allow"}:
+        return SignalLabel.REQUIREMENT
+    return SignalLabel.NOISE
 
 class GmailIngestRequest(BaseModel):
     session_id: str
@@ -353,8 +369,7 @@ def gmail_ingest(body: GmailIngestRequest):
         classified = []
         for raw in chunk_dicts:
             text = (raw.get("cleaned_text") or "").strip()
-            lower = text.lower()
-            label = SignalLabel.REQUIREMENT if any(k in lower for k in ["must", "should", "need", "requirement"]) else SignalLabel.NOISE
+            label = _fallback_label_for_text(text)
             classified.append(
                 ClassifiedChunk(
                     session_id=body.session_id,
@@ -365,7 +380,7 @@ def gmail_ingest(body: GmailIngestRequest):
                     cleaned_text=text,
                     label=label,
                     confidence=0.6,
-                    reasoning="Fallback local classification.",
+                    reasoning="Fallback local keyword classification.",
                     flagged_for_review=True,
                 )
             )

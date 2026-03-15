@@ -2,6 +2,7 @@ import os
 import sys
 import csv
 import io
+import re
 from fastapi import APIRouter, HTTPException, BackgroundTasks, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List
@@ -32,6 +33,21 @@ class RawDataChunk(BaseModel):
 class IngestRequest(BaseModel):
     chunks: List[RawDataChunk]
 
+
+def _fallback_label_for_text(text: str) -> SignalLabel:
+    lower = (text or "").lower()
+    tokens = set(re.findall(r"[a-zA-Z][a-zA-Z0-9_\-]{1,}", lower))
+
+    if tokens & {"decided", "approved", "finalized", "selected", "agreed"}:
+        return SignalLabel.DECISION
+    if tokens & {"deadline", "milestone", "launch", "rollout", "delivery", "phase", "golive", "go-live"}:
+        return SignalLabel.TIMELINE_REFERENCE
+    if tokens & {"feedback", "prefer", "concern", "issue", "friction", "request", "suggest"}:
+        return SignalLabel.STAKEHOLDER_FEEDBACK
+    if tokens & {"must", "should", "need", "needs", "require", "required", "shall", "support", "enable", "allow"}:
+        return SignalLabel.REQUIREMENT
+    return SignalLabel.NOISE
+
 def _load_api_key():
     from dotenv import load_dotenv
     load_dotenv(os.path.join(PROJECT_ROOT, "Noise filter module", ".env"), override=False)
@@ -51,8 +67,7 @@ def _process_and_store(sess_id: str, chunk_dicts: list):
         classified = []
         for raw in chunk_dicts:
             text = (raw.get("cleaned_text") or "").strip()
-            lower = text.lower()
-            label = SignalLabel.REQUIREMENT if any(k in lower for k in ["must", "should", "need", "requirement"]) else SignalLabel.NOISE
+            label = _fallback_label_for_text(text)
             classified.append(
                 ClassifiedChunk(
                     session_id=sess_id,
@@ -63,7 +78,7 @@ def _process_and_store(sess_id: str, chunk_dicts: list):
                     cleaned_text=text,
                     label=label,
                     confidence=0.6,
-                    reasoning="Fallback local classification (LLM unavailable).",
+                    reasoning="Fallback local keyword classification (LLM unavailable).",
                     flagged_for_review=True,
                 )
             )
@@ -222,8 +237,7 @@ async def ingest_demo_dataset(session_id: str, limit: int = 80):
             fallback_classified = []
             for raw in chunk_dicts:
                 text = (raw.get("cleaned_text") or "").strip()
-                lower = text.lower()
-                label = SignalLabel.REQUIREMENT if any(k in lower for k in ["must", "should", "need", "requirement"]) else SignalLabel.NOISE
+                label = _fallback_label_for_text(text)
                 fallback_classified.append(
                     ClassifiedChunk(
                         session_id=session_id,
@@ -234,7 +248,7 @@ async def ingest_demo_dataset(session_id: str, limit: int = 80):
                         cleaned_text=text,
                         label=label,
                         confidence=0.6,
-                        reasoning="Fallback local classification (LLM unavailable).",
+                        reasoning="Fallback local keyword classification (LLM unavailable).",
                         flagged_for_review=True,
                     )
                 )
