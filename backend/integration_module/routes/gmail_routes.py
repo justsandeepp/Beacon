@@ -1,6 +1,9 @@
 import os
 import sys
+import secrets
+import time
 from typing import List
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request, HTTPException, Response, Query
 from fastapi.responses import RedirectResponse
@@ -34,15 +37,34 @@ os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 # Configuration
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "")
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile"
 ]
+OAUTH_STATE_TTL_SECONDS = 10 * 60
+_oauth_states = {}
+
+
+def _clean_stale_states():
+    now = time.time()
+    stale = [key for key, created in _oauth_states.items() if now - created > OAUTH_STATE_TTL_SECONDS]
+    for key in stale:
+        _oauth_states.pop(key, None)
 
 def _get_redirect_uri():
-    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "https://localhost:8000").rstrip("/")
+    redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
+    if redirect_uri:
+        normalized = redirect_uri.strip().rstrip("/")
+        # Auto-migrate stale legacy callback paths to the active API callback route.
+        if normalized.endswith("/gmail/oauth_redirect"):
+            backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
+            return f"{backend_public_url}/integrations/gmail/auth/callback"
+        return normalized
+
+    backend_public_url = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
     return f"{backend_public_url}/integrations/gmail/auth/callback"
 
 def _get_frontend_profile_url():
@@ -54,23 +76,27 @@ class GmailIngestRequest(BaseModel):
     message_ids: List[str]
     include_attachments: bool = True
 
+
+def _get_google_client_config(redirect_uri: str):
+    web = {
+        "client_id": CLIENT_ID,
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_secret": CLIENT_SECRET,
+        "redirect_uris": [redirect_uri],
+    }
+    if GOOGLE_PROJECT_ID:
+        web["project_id"] = GOOGLE_PROJECT_ID
+    return {"web": web}
+
 @router.get("/auth/start")
 def gmail_login():
     if not CLIENT_ID or not CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google credentials not configured in .env")
     
     redirect_uri = _get_redirect_uri()
-    client_config = {
-        "web": {
-            "client_id": CLIENT_ID,
-            "project_id": "brd-generator", 
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_secret": CLIENT_SECRET,
-            "redirect_uris": [redirect_uri]
-        }
-    }
+    client_config = _get_google_client_config(redirect_uri)
     
     flow = Flow.from_client_config(
         client_config,
@@ -78,11 +104,13 @@ def gmail_login():
         redirect_uri=redirect_uri
     )
     
+    _clean_stale_states()
     authorization_url, state = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',
         prompt='consent'
     )
+    _oauth_states[state] = time.time()
     
     return RedirectResponse(authorization_url)
 
@@ -113,23 +141,19 @@ def _get_credentials():
 @router.get("/auth/callback")
 def gmail_oauth_redirect(request: Request):
     code = request.query_params.get("code")
+    state = request.query_params.get("state")
     frontend_profile = _get_frontend_profile_url()
     
-    if not code:
-        return RedirectResponse(f"{frontend_profile}?gmail=error&reason=missing_code")
+    if not code or not state:
+        return RedirectResponse(f"{frontend_profile}?gmail=error&reason=missing_code_or_state")
+
+    _clean_stale_states()
+    if state not in _oauth_states:
+        return RedirectResponse(f"{frontend_profile}?gmail=error&reason=invalid_state")
+    _oauth_states.pop(state, None)
     
     redirect_uri = _get_redirect_uri()
-    client_config = {
-        "web": {
-            "client_id": CLIENT_ID,
-            "project_id": "brd-generator",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-            "client_secret": CLIENT_SECRET,
-            "redirect_uris": [redirect_uri]
-        }
-    }
+    client_config = _get_google_client_config(redirect_uri)
     
     flow = Flow.from_client_config(
         client_config,
@@ -138,9 +162,10 @@ def gmail_oauth_redirect(request: Request):
     )
     
     try:
-        flow.fetch_token(code=code)
+        flow.fetch_token(code=code, state=state)
     except Exception as e:
-        return RedirectResponse(f"{frontend_profile}?gmail=error&reason={str(e)}")
+        message = quote(str(e), safe="")
+        return RedirectResponse(f"{frontend_profile}?gmail=error&reason={message}")
     
     credentials = flow.credentials
     user_credentials["main_user"] = {

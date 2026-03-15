@@ -24,6 +24,18 @@ async function apiFetch<T = unknown>(path: string, options?: RequestInit): Promi
     return (await res.text()) as T;
 }
 
+async function apiFetchWithFallback<T = unknown>(primaryPath: string, fallbackPath: string, options?: RequestInit): Promise<T> {
+    try {
+        return await apiFetch<T>(primaryPath, options);
+    } catch (error) {
+        const status = (error as { status?: number })?.status;
+        if (status === 404) {
+            return apiFetch<T>(fallbackPath, options);
+        }
+        throw error;
+    }
+}
+
 export interface Session {
     session_id: string;
     status: string;
@@ -430,10 +442,38 @@ export async function ingestSlackChannels(
 }
 
 export async function getGmailStatus(): Promise<GmailStatus> {
-    return apiFetch<GmailStatus>("/integrations/gmail/status");
+    try {
+        return await apiFetch<GmailStatus>("/integrations/gmail/status");
+    } catch (error) {
+        const status = (error as { status?: number })?.status;
+        if (status !== 404) {
+            throw error;
+        }
+
+        // Legacy backend compatibility: infer status from /gmail/check.
+        try {
+            await apiFetch<{ count?: number; emails?: GmailEmail[] }>("/gmail/check?count=1");
+            return {
+                available: true,
+                connected: true,
+                message: "Gmail is connected.",
+            };
+        } catch (legacyError) {
+            const legacyStatus = (legacyError as { status?: number })?.status;
+            if (legacyStatus === 401) {
+                return {
+                    available: true,
+                    connected: false,
+                    message: "Gmail is available but not connected.",
+                };
+            }
+            throw legacyError;
+        }
+    }
 }
 
 export async function getGmailProfile(): Promise<GmailProfile> {
+    // Legacy backend has no dedicated profile endpoint.
     return apiFetch<GmailProfile>("/integrations/gmail/profile");
 }
 
@@ -450,11 +490,29 @@ export async function getGmailAttachment(messageId: string, attachmentId: string
 }
 
 export async function getGmailOAuthUrl(): Promise<string> {
-    return joinUrl(BASE, "/integrations/gmail/auth/start");
+    try {
+        // Probe the active route family once and return a direct auth URL.
+        await apiFetch<unknown>("/integrations/gmail/status");
+        return joinUrl(BASE, "/integrations/gmail/auth/start");
+    } catch (error) {
+        const status = (error as { status?: number })?.status;
+        if (status === 404) {
+            return joinUrl(BASE, "/gmail/login");
+        }
+        return joinUrl(BASE, "/integrations/gmail/auth/start");
+    }
 }
 
 export async function disconnectGmail(): Promise<{ message: string }> {
-    return apiFetch<{ message: string }>("/integrations/gmail/disconnect", { method: "POST" });
+    try {
+        return await apiFetch<{ message: string }>("/integrations/gmail/disconnect", { method: "POST" });
+    } catch (error) {
+        const status = (error as { status?: number })?.status;
+        if (status === 404) {
+            return { message: "Gmail disconnect is not available on this backend route set." };
+        }
+        throw error;
+    }
 }
 
 export interface GmailSearchOptions {
@@ -478,7 +536,10 @@ export async function listGmailEmails(options: GmailSearchOptions = {}): Promise
     if (options.pageToken) params.append("page_token", options.pageToken);
 
     const query = params.toString();
-    return apiFetch<{ count: number; emails: GmailEmail[]; query_used?: string; next_page_token?: string }>(`/integrations/gmail/check${query ? `?${query}` : ""}`);
+    return apiFetchWithFallback<{ count: number; emails: GmailEmail[]; query_used?: string; next_page_token?: string }>(
+        `/integrations/gmail/check${query ? `?${query}` : ""}`,
+        `/gmail/check${query ? `?${query}` : ""}`
+    );
 }
 
 export async function ingestGmailEmails(
@@ -486,7 +547,7 @@ export async function ingestGmailEmails(
     messageIds: string[],
     includeAttachments: boolean = true
 ): Promise<GmailIngestResponse> {
-    return apiFetch<GmailIngestResponse>("/integrations/gmail/ingest", {
+    return apiFetchWithFallback<GmailIngestResponse>("/integrations/gmail/ingest", "/gmail/process_selected", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

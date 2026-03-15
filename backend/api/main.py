@@ -11,11 +11,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Load env vars once for all routers (e.g., Slack OAuth config).
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INTEGRATION_MODULE_ROOT = os.path.join(PROJECT_ROOT, "Integration Module")
+ENABLE_LEGACY_GMAIL_ROUTES = os.getenv("ENABLE_LEGACY_GMAIL_ROUTES", "false").lower() == "true"
 load_dotenv(os.path.join(PROJECT_ROOT, "Noise filter module", ".env"), override=False)
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=False)
 
-# Legacy integration module path still contains spaces; keep it importable for Gmail routes.
-if os.path.isdir(INTEGRATION_MODULE_ROOT) and INTEGRATION_MODULE_ROOT not in sys.path:
+# Legacy integration module path still contains spaces; keep it importable only when explicitly enabled.
+if ENABLE_LEGACY_GMAIL_ROUTES and os.path.isdir(INTEGRATION_MODULE_ROOT) and INTEGRATION_MODULE_ROOT not in sys.path:
     sys.path.append(INTEGRATION_MODULE_ROOT)
 
 from .routers import sessions, ingest, review, brd, hitl, slack
@@ -65,12 +66,13 @@ app.include_router(hitl.router)
 app.include_router(slack.router)
 app.include_router(gmail_router)
 
-try:
-    gmail_router = _load_legacy_gmail_router()
-    if gmail_router is not None:
-        app.include_router(gmail_router)
-except Exception as e:
-    print(f"Warning: Gmail router not loaded: {e}")
+if ENABLE_LEGACY_GMAIL_ROUTES:
+    try:
+        gmail_router = _load_legacy_gmail_router()
+        if gmail_router is not None:
+            app.include_router(gmail_router)
+    except Exception as e:
+        print(f"Warning: Gmail router not loaded: {e}")
 
 @app.get("/")
 def read_root():
