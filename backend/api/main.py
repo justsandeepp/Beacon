@@ -19,6 +19,7 @@ if os.path.isdir(INTEGRATION_MODULE_ROOT) and INTEGRATION_MODULE_ROOT not in sys
     sys.path.append(INTEGRATION_MODULE_ROOT)
 
 from .routers import sessions, ingest, review, brd, hitl, slack
+from integration_module.routes.gmail_routes import router as gmail_router
 from brd_module.storage import init_db
 
 
@@ -62,6 +63,7 @@ app.include_router(review.router)
 app.include_router(brd.router)
 app.include_router(hitl.router)
 app.include_router(slack.router)
+app.include_router(gmail_router)
 
 try:
     gmail_router = _load_legacy_gmail_router()
