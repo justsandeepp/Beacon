@@ -1,8 +1,24 @@
 import base64
 import re
-from googleapiclient.discovery import build
+import time
+import random
+from googleapiclient.discovery import build  # type: ignore
+from googleapiclient.errors import HttpError  # type: ignore
 
-def strip_html_tags(text):
+def execute_with_retry(request, max_retries=5):
+    """Execute a Google API request with exponential backoff on 429 and 5xx errors."""
+    for n in range(max_retries):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if e.resp.status in [429, 500, 502, 503, 504]:
+                sleep_time = (2 ** n) + random.random()
+                time.sleep(sleep_time)
+            else:
+                raise e
+    return request.execute()
+
+def strip_html_tags(text: str):
     """Remove HTML tags, CSS, URLs and all newline characters, returning a single line of text."""
     # Remove style and script tags and their content
     text = re.sub(r'<(style|script)[^>]*>.*?</\1>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
@@ -17,7 +33,7 @@ def strip_html_tags(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-def get_body(payload):
+def get_body(payload: dict):
     """Recursively extract and decode the body from a Gmail message payload."""
     body = ""
     if "parts" in payload:
@@ -26,23 +42,23 @@ def get_body(payload):
             data = part.get("body", {}).get("data")
             if mimeType == "text/plain" and data:
                 plain_text = base64.urlsafe_b64decode(data).decode("utf-8")
-                body += strip_html_tags(plain_text) + " "
+                body += strip_html_tags(str(plain_text)) + " "
             elif mimeType == "text/html" and data:
                 html_content = base64.urlsafe_b64decode(data).decode("utf-8")
                 if not body.strip():
-                    body += strip_html_tags(html_content) + " "
+                    body += strip_html_tags(str(html_content)) + " "
             elif "parts" in part:
                 body += get_body(part) + " "
     else:
         data = payload.get("body", {}).get("data")
         if data:
             content = base64.urlsafe_b64decode(data).decode("utf-8")
-            body = strip_html_tags(content)
+            body = strip_html_tags(str(content))
     return body
 
 def get_email_details(service, msg_id):
     """Fetch and parse email details including subject, sender, and body."""
-    msg = service.users().messages().get(userId="me", id=msg_id).execute()
+    msg = execute_with_retry(service.users().messages().get(userId="me", id=msg_id))
     headers = msg.get("payload", {}).get("headers", [])
     subject = "No Subject"
     sender = "Unknown"
@@ -86,9 +102,9 @@ def get_attachments(payload):
 
 def download_attachment(service, message_id, attachment_id):
     """Fetch the content of an attachment."""
-    attachment = service.users().messages().attachments().get(
+    attachment = execute_with_retry(service.users().messages().attachments().get(
         userId="me", messageId=message_id, id=attachment_id
-    ).execute()
+    ))
     return base64.urlsafe_b64decode(attachment.get("data").encode("UTF-8"))
 
 def get_gmail_service(credentials):
