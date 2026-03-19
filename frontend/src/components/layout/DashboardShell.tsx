@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import PipelineStepper, { StageInfo } from "@/components/ui/PipelineStepper";
 import NewBRDModal from "@/components/ui/NewBRDModal";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useAuth } from "@/contexts/AuthContext";
 import { useSessionStore } from "@/store/useSessionStore";
 import { getBRD, getChunks } from "@/lib/apiClient";
 
@@ -173,7 +174,8 @@ function hasGeneratedContent(sections: Record<string, string | undefined>): bool
 export default function DashboardShell({ children }: { children: React.ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
-    const { user, logout } = useAuthStore();
+    const { user } = useAuthStore();
+    const { logout } = useAuth();
     const { activeSessionId } = useSessionStore();
 
     const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -254,8 +256,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         try {
             await logout();
         } finally {
-            // Use replace + hard navigation fallback to avoid bouncing back to protected routes.
-            router.replace("/");
+            // Force hard navigation to root "/" to ensure clean state and avoid middleware loops.
             window.location.href = "/";
         }
     };

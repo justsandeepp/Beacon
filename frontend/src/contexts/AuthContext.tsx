@@ -112,7 +112,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                         prefix => pathname.startsWith(prefix)
                     );
                     if (isProtectedRoute) {
-                        router.push('/login');
+                        router.push('/');
                     }
                 });
             }
